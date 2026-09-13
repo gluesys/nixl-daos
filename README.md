@@ -22,4 +22,6 @@ infinia, mooncake, libfabric, gpunetio, gusli, azure_blob, uccl)에 DAOS 는 없
   이미 확인된 규칙 유지: I/O 스레드마다 `cuCtxSetCurrent`, MR 캐시 강제 off, RP_2 GPU 소스 쓰기 금지.
 
 ## 상태
-Phase 0. hf3fs 플러그인을 템플릿으로 한 stub. 빌드는 meson + daos-devel 이 있는 호스트(daos-client 이미지)에서.
+Phase 0. hf3fs 플러그인을 템플릿으로 한 스켈레톤. 2026-09-14: `scripts/syntax-check.sh` 로 upstream NIXL 헤더 +
+DAOS 2.8 헤더에 대해 `g++ -std=c++20 -fsyntax-only` 통과(daos-client 이미지, abseil 20250127.1 헤더 필요).
+링크·실행은 아직. NIXL 은 C++20 을 요구한다(`std::span`).
