@@ -22,7 +22,7 @@ POOL=$1; SYS=$2; IMG=$3; CONT=$4
 [ -f /tmp/nixl-daos.tar ] && { podman load -q -i /tmp/nixl-daos.tar >/dev/null && rm -f /tmp/nixl-daos.tar; } || true
 systemctl is-active daos_agent >/dev/null || { systemctl start daos_agent || true; sleep 12; }
 systemctl is-active daos_agent
-RUN="podman run --rm --network host --ulimit memlock=-1:-1 --device /dev/infiniband -v /var/run/daos_agent:/var/run/daos_agent -v /etc/daos:/etc/daos:ro -e DAOS_AGENT_DRPC_DIR=/var/run/daos_agent $IMG"
+RUN="podman run --rm --network host --security-opt label=disable --ulimit memlock=-1:-1 --device /dev/infiniband -v /var/run/daos_agent:/var/run/daos_agent -v /etc/daos:/etc/daos:ro -e DAOS_AGENT_DRPC_DIR=/var/run/daos_agent $IMG"
 echo "== pool"; $RUN daos pool query "$POOL" | head -6
 echo "== container (create if missing)"; $RUN daos cont query "$POOL" "$CONT" >/dev/null 2>&1 || $RUN daos cont create "$POOL" "$CONT" --type POSIX --properties rd_fac:0 | tail -2
 echo "== plugin load check"; $RUN bash -c 'ls $NIXL_PLUGIN_DIR; ldd $NIXL_PLUGIN_DIR/libplugin_DAOS.so | grep -E "daos|not found"'
