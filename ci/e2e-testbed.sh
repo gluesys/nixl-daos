@@ -26,6 +26,8 @@ RUN="podman run --rm --network host --security-opt label=disable --ulimit memloc
 echo "== pool"; $RUN daos pool query "$POOL" | head -6
 echo "== container (create if missing)"; $RUN daos cont query "$POOL" "$CONT" >/dev/null 2>&1 || $RUN daos cont create "$POOL" "$CONT" --type POSIX --properties rd_fac:0 | tail -2
 echo "== plugin load check"; $RUN bash -c 'ls $NIXL_PLUGIN_DIR; ldd $NIXL_PLUGIN_DIR/libplugin_DAOS.so | grep -E "daos|not found"'
-echo "== nixl_daos_test (4 objects x 1 MiB)"; $RUN nixl_daos_test --pool "$POOL" --container "$CONT" --sys "$SYS" -n 4 -s 1048576
-echo "== nixl_daos_test layerwise (8 objects x 4 layers x 256 KiB)"; $RUN nixl_daos_test --pool "$POOL" --container "$CONT" --sys "$SYS" -n 8 -s 262144 -l 4
+echo "== container for test_agent"; $RUN daos cont query "$POOL" "${CONT}-agent" >/dev/null 2>&1 || $RUN daos cont create "$POOL" "${CONT}-agent" --type POSIX --properties rd_fac:0 | tail -1
+echo "== test_xfer (backend class, write/read round trip, integrity, miss)"; $RUN nixl_daos_test_xfer "$POOL" "$CONT"
+echo "== test_reg (register/deregister, oid stability)"; $RUN nixl_daos_test_reg "$POOL" "$CONT"
+echo "== test_agent (through a real nixlAgent)"; $RUN nixl_daos_test_agent "$POOL" "${CONT}-agent"
 REMOTE
