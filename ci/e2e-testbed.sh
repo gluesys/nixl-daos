@@ -10,10 +10,10 @@
 set -euo pipefail
 HOST=${1:?client host (user@ip)}; POOL=${2:?pool}; SYS=${3:?daos system name}
 IMG=${4:-nixl-daos:dev}; CONT=${5:-nixltest}
-DOCKER=${DOCKER:-docker}; SSH=${SSH:-ssh -o StrictHostKeyChecking=no}
+DOCKER=${DOCKER:-docker}; SSH=${SSH:-ssh -o StrictHostKeyChecking=no}; SCP=${SCP:-scp -o StrictHostKeyChecking=no}
 TAR=/tmp/nixl-daos-$(date +%s).tar
 echo "== ship image $IMG to $HOST"
-$DOCKER save -o "$TAR" "$IMG"; scp -q "$TAR" "$HOST:/tmp/nixl-daos.tar"; rm -f "$TAR"
+$DOCKER save -o "$TAR" "$IMG"; $SCP -q "$TAR" "$HOST:/tmp/nixl-daos.tar"; rm -f "$TAR"
 $SSH "$HOST" bash -s "$POOL" "$SYS" "$IMG" "$CONT" <<'REMOTE'
 set -euo pipefail
 POOL=$1; SYS=$2; IMG=$3; CONT=$4
