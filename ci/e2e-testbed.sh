@@ -12,13 +12,15 @@ HOST=${1:?client host (user@ip)}; POOL=${2:?pool}; SYS=${3:?daos system name}
 IMG=${4:-nixl-daos:dev}; CONT=${5:-nixltest}
 DOCKER=${DOCKER:-docker}; SSH=${SSH:-ssh -o StrictHostKeyChecking=no}; SCP=${SCP:-scp -o StrictHostKeyChecking=no}
 TAR=/tmp/nixl-daos-$(date +%s).tar
-echo "== ship image $IMG to $HOST"
-$DOCKER save "$IMG" > "$TAR"; $SCP -q "$TAR" "$HOST:/tmp/nixl-daos.tar"; rm -f "$TAR"
+if [ "${SKIP_SHIP:-0}" != 1 ]; then
+  echo "== ship image $IMG to $HOST"
+  $DOCKER save "$IMG" > "$TAR"; $SCP -q "$TAR" "$HOST:/tmp/nixl-daos.tar"; rm -f "$TAR"
+fi
 $SSH "$HOST" bash -s "$POOL" "$SYS" "$IMG" "$CONT" <<'REMOTE'
 set -euo pipefail
 POOL=$1; SYS=$2; IMG=$3; CONT=$4
-podman load -q -i /tmp/nixl-daos.tar >/dev/null && rm -f /tmp/nixl-daos.tar
-systemctl is-active daos_agent >/dev/null || { systemctl start daos_agent; sleep 3; }
+[ -f /tmp/nixl-daos.tar ] && { podman load -q -i /tmp/nixl-daos.tar >/dev/null && rm -f /tmp/nixl-daos.tar; } || true
+systemctl is-active daos_agent >/dev/null || { systemctl start daos_agent || true; sleep 12; }
 systemctl is-active daos_agent
 RUN="podman run --rm --network host --ulimit memlock=-1:-1 --device /dev/infiniband -v /var/run/daos_agent:/var/run/daos_agent -v /etc/daos:/etc/daos:ro -e DAOS_AGENT_DRPC_DIR=/var/run/daos_agent $IMG"
 echo "== pool"; $RUN daos pool query "$POOL" | head -6
