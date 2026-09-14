@@ -24,7 +24,7 @@ if ! meson setup build-daos --reconfigure -Ddaos_path=/usr -Ddisable_gds_backend
   echo "meson setup FAILED"; grep -E "ERROR|error:" build-daos-setup.log | tail -5; tail -20 build-daos-setup.log; exit 1
 fi
 grep -E "DAOS|daos_path|UCX|Message" build-daos-setup.log | head -20
-ninja -C build-daos -j"$JOBS" 2>&1 | tail -15
+if ! ninja -C build-daos -j"$JOBS" > build-daos-ninja.log 2>&1; then echo "ninja FAILED"; grep -E "error|FAILED" build-daos-ninja.log | head -12; exit 1; fi; tail -3 build-daos-ninja.log
 echo "== plugin artifact"; find build-daos -name "libplugin_DAOS*.so" -exec ls -la {} \; ; ldd $(find build-daos -name "libplugin_DAOS*.so" | head -1) | grep -E "daos|not found" || true
 echo "== install to DESTDIR install-daos (prefix /opt/nixl)"
 meson configure build-daos -Dprefix=/opt/nixl >/dev/null
