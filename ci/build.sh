@@ -25,4 +25,16 @@ if ! meson setup build-daos --reconfigure -Ddaos_path=/usr -Ddisable_gds_backend
 fi
 grep -E "DAOS|daos_path|UCX|Message" build-daos-setup.log | head -20
 ninja -C build-daos -j"$JOBS" 2>&1 | tail -15
-echo "== plugin artifact"; find build-daos -name "libplugin_DAOS*.so" -exec ls -la {} \; ; ldd $(find build-daos -name "libplugin_DAOS*.so" | head -1) | grep -E "daos|not found" || true'
+echo "== plugin artifact"; find build-daos -name "libplugin_DAOS*.so" -exec ls -la {} \; ; ldd $(find build-daos -name "libplugin_DAOS*.so" | head -1) | grep -E "daos|not found" || true
+echo "== install to DESTDIR install-daos (prefix /opt/nixl)"
+meson configure build-daos -Dprefix=/opt/nixl >/dev/null
+rm -rf install-daos; DESTDIR=/nixl/install-daos ninja -C build-daos install >/dev/null
+ls install-daos/opt/nixl/lib64/plugins/
+# The in-tree test only builds with -Dbuild_tests and a non-release buildtype; compile it
+# directly against the installed tree so the release build stays as shipped.
+P=install-daos/opt/nixl
+g++ -std=c++20 -O2 -o $P/bin/nixl_daos_test test/unit/plugins/daos/nixl_daos_test.cpp \
+    -I$P/include -I$P/include/nixl -Isrc/utils -Isrc/api/cpp -L$P/lib64 -lnixl -Wl,-rpath,/opt/nixl/lib64
+ls install-daos/opt/nixl/bin/ | tr "\n" " "; echo'
+echo "== runtime image"
+$DOCKER build -q -f "$ROOT/images/Dockerfile.runtime" --build-arg BASE="$IMG" -t nixl-daos:dev "$NIXL/install-daos" && $DOCKER run --rm nixl-daos:dev bash -c 'ls $NIXL_PLUGIN_DIR; nixl_daos_test 2>&1 | head -2'

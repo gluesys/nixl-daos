@@ -57,4 +57,9 @@ if enabled_plugins.get('DAOS', true) and not get_option('disable_daos_backend')
 endif
 TST
 fi
+
+# register DAOS in the known-plugin list so -Denable_plugins=DAOS / -Ddisable_plugins=DAOS work
+if ! grep -q "'INFINIA', 'DAOS'" "$NIXL/meson.build"; then
+  sed -i "s/'INFINIA', 'TELEMETRY_DOCA'\]/'INFINIA', 'DAOS', 'TELEMETRY_DOCA']/" "$NIXL/meson.build"
+fi
 echo "integration applied to $NIXL"
