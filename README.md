@@ -22,6 +22,15 @@ infinia, mooncake, libfabric, gpunetio, gusli, azure_blob, uccl)에 DAOS 는 없
   이미 확인된 규칙 유지: I/O 스레드마다 `cuCtxSetCurrent`, MR 캐시 강제 off, RP_2 GPU 소스 쓰기 금지.
 
 ## 상태
-Phase 0. hf3fs 플러그인을 템플릿으로 한 스켈레톤. 2026-09-14: `scripts/syntax-check.sh` 로 upstream NIXL 헤더 +
-DAOS 2.8 헤더에 대해 `g++ -std=c++20 -fsyntax-only` 통과(daos-client 이미지, abseil 20250127.1 헤더 필요).
-링크·실행은 아직. NIXL 은 C++20 을 요구한다(`std::span`).
+Phase 1 첫 마일스톤 달성(2026-09-14): **DRAM↔OBJ_SEG WRITE/READ 왕복이 실제 DAOS 2.8 시스템에서 PASS.**
+- 빌드: `ci/build.sh` 가 daos-client 이미지 안에서 upstream NIXL(e77af99) + 이 플러그인을 meson 으로 빌드하고
+  `/opt/nixl` 설치 트리 → 런타임 이미지 `nixl-daos:dev` 를 만든다(`images/Dockerfile.runtime`).
+  buildtype debugoptimized + `build_tests=true` 라야 `test/unit/plugins/daos/nixl_daos_test` 가 함께 빌드·설치된다.
+- e2e: `ci/e2e-testbed.sh` (daos_ci 테스트베드 client 192.168.34.20 → 서버 34.21/22, provider `ofi+verbs;ofi_rxm`, ib0,
+  pool `nvme_pool`, 시스템 `daos_flexa`). 결과:
+  - 4 객체 × 1 MiB: WRITE 4 MiB 200 ms, READ 172 ms, 바이트 검증 OK
+  - 8 객체 × 4 레이어 × 256 KiB(layerwise 형태, 키당 iod 4개 1 RPC): WRITE 8 MiB 191 ms, READ 157 ms, OK
+  - 첫 호출 지연(pool connect·object open)이 포함된 수치라 처리량 지표로 읽지 말 것. 성능 측정은 별도 이슈.
+- 컨테이너에서 호스트 `daos_agent` 소켓에 붙으려면 `--security-opt label=disable`(SELinux) 이 필요했다.
+- 남은 것: `daos_oclass_name2id` 로 oclass 문자열 매핑(현재 OC_UNKNOWN → 컨테이너 기본), 대용량·동시성·재시도 경로,
+  NIXL `nixlbench`, LMCache NIXL 백엔드 e2e(#2), upstream PR(#3). VRAM_SEG 는 `-Ddaos_gpu` 뒤에 격리(#4).
