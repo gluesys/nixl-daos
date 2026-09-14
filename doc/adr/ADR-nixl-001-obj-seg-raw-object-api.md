@@ -3,7 +3,7 @@
 
 # ADR-nixl-001: OBJ_SEG + libdaos raw object API, DFS 미사용
 
-- 상태: 제안
+- 상태: **대체됨** — `exastor/lmcache-daos` `nixl/plugin`(2026-09-12~)의 설계(FILE_SEG, metaInfo="pool/container", devId→oid, dkey=addr/64MiB span)가 정본. 'DFS 미사용·raw object API' 결론은 동일하게 유지된다.
 - 날짜: 2026-09-14
 
 ## 배경

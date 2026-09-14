@@ -3,9 +3,13 @@
 
 # nixl-daos
 
-NIXL(ai-dynamo/nixl) 백엔드 플러그인: DAOS. `src/plugins/daos/` 는 upstream 트리에 그대로 떨어뜨릴 수 있는
-경로로 유지한다(PR 대상). 2026-09 기준 upstream 플러그인 목록(ucx, cuda_gds, gds_mt, posix, obj, hf3fs,
-infinia, mooncake, libfabric, gpunetio, gusli, azure_blob, uccl)에 DAOS 는 없다.
+NIXL(ai-dynamo/nixl) DAOS 백엔드의 **컨테이너 빌드·CI·테스트베드 e2e 래퍼**.
+
+**플러그인 소스의 정본은 `exastor/lmcache-daos` 의 `nixl/plugin`(백엔드)과 `nixl/tests`** 다(2026-09-12~, 실측 34 GB/s,
+EQ 데드라인, VRAM_SEG 게이팅). 이 저장소의 `src/plugins/daos/` 는 그보다 먼저 만들어진 스켈레톤이며 lmcache-daos 가
+옆에 체크아웃되어 있지 않을 때의 폴백으로만 남겨 둔다(`upstream/apply-integration.sh` 의 `PLUGIN_SRC`).
+2026-09 기준 upstream 플러그인 목록(ucx, cuda_gds, gds_mt, posix, obj, hf3fs, infinia, mooncake, libfabric, gpunetio,
+gusli, azure_blob, uccl)에 DAOS 는 없다.
 
 이 저장소가 지키는 규칙(모든 exastor K8s 저장소 공통):
 1. **CRD 가 유일한 관리 API.** 어플라이언스 REST/UI 와 코드를 공유하지 않는다.
@@ -13,7 +17,10 @@ infinia, mooncake, libfabric, gpunetio, gusli, azure_blob, uccl)에 DAOS 는 없
 3. **파괴적 작업 자동화 금지.** `storage format`/wipe/재포맷은 사람 승인(어노테이션) 없이 실행하지 않는다.
 4. **upstream-first.** 패치는 먼저 daos-stack / ai-dynamo/nixl / LMCache 로 보낸다.
 
-## 설계 (ADR-nixl-001)
+## 설계 메모 (스켈레톤 기준, ADR-nixl-001 — lmcache-daos 설계로 대체됨)
+
+정본(lmcache-daos/nixl)의 매핑은 다르다: 세그먼트는 `FILE_SEG`, `metaInfo` = `"pool/container[/hi.lo]"`, `devId` = 객체 키(oid 를
+결정적으로 유도), `dkey = addr / 64 MiB`, `akey = addr % 64 MiB`. 아래는 스켈레톤이 택했던 방식의 기록이다.
 - **OBJ_SEG + libdaos raw object API.** DFS 를 거치지 않는다. lmcache-daos layerwise 실측에서 DFS 객체당 고정비
   0.63 ms 대 raw object 0.0137 ms(46배)가 근거. 디스크립터 리스트를 dkey=청크 키, akey=레이어(또는 오프셋)로
   iod 배열 한 RPC 에 접는다. `bucket` = DAOS 컨테이너 UUID, `key` = LMCache 청크 해시.
