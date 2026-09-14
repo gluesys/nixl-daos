@@ -42,4 +42,19 @@ assert marker in s, "telemetry marker not found"
 s=s.replace(marker, block+marker,1); open(p,"w").write(s)
 PY
 fi
+
+# test executable (not auto-run; needs a live DAOS)
+mkdir -p "$NIXL/test/unit/plugins/daos"
+cp "$HERE"/test/unit/plugins/daos/nixl_daos_test.cpp "$HERE"/test/unit/plugins/daos/meson.build "$NIXL/test/unit/plugins/daos/"
+if ! grep -q "subdir('daos')" "$NIXL/test/unit/plugins/meson.build"; then
+  cat >> "$NIXL/test/unit/plugins/meson.build" <<'TST'
+
+# DAOS backend test (exastor/nixl-daos); daos_lib_found is set in src/plugins/meson.build
+if enabled_plugins.get('DAOS', true) and not get_option('disable_daos_backend')
+    if cc.find_library('daos', dirs: [get_option('daos_path') + '/lib64', get_option('daos_path') + '/lib'], required: false).found()
+        subdir('daos')
+    endif
+endif
+TST
+fi
 echo "integration applied to $NIXL"
