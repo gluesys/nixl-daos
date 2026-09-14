@@ -71,7 +71,7 @@ foreach t : ['test_reg', 'test_xfer']
 endforeach
 executable('nixl_daos_test_agent', 'test_agent.cpp',
            dependencies: [nixl_dep, nixl_infra, absl_log_dep],
-           include_directories: daos_test_inc, install: true)
+           include_directories: daos_test_inc, cpp_args: ['-Wno-error=shift-count-overflow'], install: true)
 TST
   python3 - "$NIXL/test/unit/plugins/meson.build" <<'PY'
 import sys,re; p=sys.argv[1]; s=open(p).read()
