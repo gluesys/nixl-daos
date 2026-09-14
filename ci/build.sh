@@ -15,9 +15,14 @@ DOCKER=${DOCKER:-docker}
 "$ROOT/upstream/apply-integration.sh" "$NIXL"
 $DOCKER run --rm -v "$NIXL:/nixl" -v "$ROOT:/p:ro" -e JOBS="$JOBS" "$IMG" bash -c '
 set -euo pipefail
-dnf -y -q install gcc-c++ cmake pkg-config git python3-pip ucx-devel libuuid-devel libaio-devel >/dev/null 2>&1 || dnf -y install gcc-c++ cmake pkg-config git python3-pip ucx-devel libuuid-devel libaio-devel | tail -1
-pip3 -q install "meson>=1.3" ninja 2>/dev/null || pip3 install meson ninja | tail -1
+PKGS="gcc-c++ cmake pkg-config git python3-pip python3-devel ucx-devel libuuid-devel libaio-devel"
+dnf -y -q install $PKGS >/dev/null 2>&1 || dnf -y install $PKGS | tail -1
+# README: pip3 install meson ninja pybind11 tomlkit (python bindings need pybind11; tomlkit reads Cargo.lock)
+pip3 -q install "meson>=1.3" ninja pybind11 tomlkit 2>/dev/null || pip3 install meson ninja pybind11 tomlkit | tail -1
 cd /nixl
-meson setup build-daos --reconfigure -Ddaos_path=/usr -Ddisable_gds_backend=true -Ddisable_mooncake_backend=true -Ddisable_infinia_backend=true -Dbuildtype=release 2>&1 | grep -E "DAOS|daos|UCX|Message|WARNING|ERROR|Found|abseil" | head -40 || true
+if ! meson setup build-daos --reconfigure -Ddaos_path=/usr -Ddisable_gds_backend=true -Ddisable_mooncake_backend=true -Ddisable_infinia_backend=true -Dbuildtype=release > build-daos-setup.log 2>&1; then
+  echo "meson setup FAILED"; grep -E "ERROR|error:" build-daos-setup.log | tail -5; tail -20 build-daos-setup.log; exit 1
+fi
+grep -E "DAOS|daos_path|UCX|Message" build-daos-setup.log | head -20
 ninja -C build-daos -j"$JOBS" 2>&1 | tail -15
 echo "== plugin artifact"; find build-daos -name "libplugin_DAOS*.so" -exec ls -la {} \; ; ldd $(find build-daos -name "libplugin_DAOS*.so" | head -1) | grep -E "daos|not found" || true'
