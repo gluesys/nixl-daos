@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+#
+# nixl-daos runtime: daos-client (libdaos 2.8) + NIXL installed under /opt/nixl
+# with the DAOS plugin. Build context = the `install-daos/` DESTDIR tree that
+# ci/build.sh produces (meson prefix /opt/nixl).
+ARG BASE=daos/daos-client:dev
+FROM ${BASE}
+COPY opt/nixl /opt/nixl
+ENV NIXL_PLUGIN_DIR=/opt/nixl/lib64/plugins \
+    LD_LIBRARY_PATH=/opt/nixl/lib64:/opt/nixl/lib64/plugins \
+    PATH=/opt/nixl/bin:$PATH
+RUN dnf -y -q install ucx libaio >/dev/null 2>&1 || true; ls /opt/nixl/lib64/plugins
