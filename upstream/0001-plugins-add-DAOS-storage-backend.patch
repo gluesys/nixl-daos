@@ -1,4 +1,4 @@
-From 1ad490a22f8848833840840a192e4d3f380358ad Mon Sep 17 00:00:00 2001
+From c19ca6536bc83937a06aeaf203fe19a969cec666 Mon Sep 17 00:00:00 2001
 From: Kyeongpyo Kim <hgichon@gmail.com>
 Date: Wed, 7 Oct 2026 22:53:41 +0900
 Subject: [PATCH] plugins: add DAOS storage backend
@@ -31,8 +31,8 @@ Signed-off-by: Kyeongpyo Kim <hgichon@gmail.com>
  meson.build                           |   2 +-
  meson_options.txt                     |   2 +
  src/plugins/daos/README.md            | 194 +++++++
- src/plugins/daos/daos_backend.cpp     | 780 ++++++++++++++++++++++++++
- src/plugins/daos/daos_backend.h       | 344 ++++++++++++
+ src/plugins/daos/daos_backend.cpp     | 786 ++++++++++++++++++++++++++
+ src/plugins/daos/daos_backend.h       | 344 +++++++++++
  src/plugins/daos/daos_plugin.cpp      |  43 ++
  src/plugins/daos/meson.build          |  89 +++
  src/plugins/meson.build               |   5 +
@@ -41,7 +41,7 @@ Signed-off-by: Kyeongpyo Kim <hgichon@gmail.com>
  test/unit/plugins/daos/test_reg.cpp   | 107 ++++
  test/unit/plugins/daos/test_xfer.cpp  | 182 ++++++
  test/unit/plugins/meson.build         |   4 +
- 13 files changed, 1968 insertions(+), 1 deletion(-)
+ 13 files changed, 1974 insertions(+), 1 deletion(-)
  create mode 100644 src/plugins/daos/README.md
  create mode 100644 src/plugins/daos/daos_backend.cpp
  create mode 100644 src/plugins/daos/daos_backend.h
@@ -280,10 +280,10 @@ index 0000000..cc616fc
 +[vram]: https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-VRAM.md
 diff --git a/src/plugins/daos/daos_backend.cpp b/src/plugins/daos/daos_backend.cpp
 new file mode 100644
-index 0000000..62de425
+index 0000000..3c22944
 --- /dev/null
 +++ b/src/plugins/daos/daos_backend.cpp
-@@ -0,0 +1,780 @@
+@@ -0,0 +1,786 @@
 +/*
 + * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
 + * SPDX-License-Identifier: Apache-2.0
@@ -457,6 +457,12 @@ index 0000000..62de425
 +    /* Workers touch container handles through the object handles they were
 +     * given, so they have to be gone before anything below is closed. */
 +    pool_.reset();
++
++    /* Each event queue owns a network context; daos_fini() refuses to run while
++     * one is open (DER_BUSY, "cannot finalize, current ctx_num"), and the pool's
++     * own destructor would otherwise run after it, destroying queues in a library
++     * that has already been shut down. */
++    eqPool_.reset();
 +
 +    {
 +        std::lock_guard<std::mutex> g(mtx_);

@@ -1,10 +1,11 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright 2026 Gluesys Co., Ltd. -->
 
-<!-- Draft of the design-discussion issue for ai-dynamo/nixl (CONTRIBUTING: a large
-     enhancement needs an issue before the PR). Not posted yet. -->
+<!-- Design-discussion issue for ai-dynamo/nixl (CONTRIBUTING: a large enhancement
+     needs an issue before the PR). Posted 2026-10-08 as
+     https://github.com/ai-dynamo/nixl/issues/2361 -->
 
-**Title:** Proposal: DAOS storage backend plugin
+**Title:** RFC: DAOS storage backend plugin
 
 ## Summary
 
@@ -60,9 +61,11 @@ LAYERWISE-MEASUREMENT.md, FAILURE-MODES.md).
 4. **GPU-direct.** `VRAM_SEG` depends on a DAOS client with GPU support that is not
    in a released DAOS yet, and is currently slower than staging through host
    memory. Should we drop it from the first PR and add it later?
-5. **Copyright header.** New files carry `SPDX-FileCopyrightText: Copyright (c) 2026
-   Gluesys Co., Ltd.`. Recent vendor plugins (INFINIA) also carry the NVIDIA line;
-   tell us if you want that.
+5. **Copyright header.** `.github/workflows/copyright-check.sh` accepts a file only
+   with an `SPDX-FileCopyrightText` line from the `AUTHORS` list (NVIDIA, AMD). The new
+   files are written by Gluesys. Should we add the NVIDIA line next to ours, as the
+   INFINIA plugin did, or would you add "Gluesys Co., Ltd" to `AUTHORS`, as was done
+   for AMD?
 
 ## Prior contribution
 
