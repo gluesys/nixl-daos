@@ -46,7 +46,7 @@ backend use it directly. Design discussed in #2361.
   `ofi+tcp`, client in a Kubernetes pod with `daos_agent` as a sidecar:
   `nixl_daos_test_xfer` (10/10), `nixl_daos_test_reg` (11/11) and
   `nixl_daos_test_agent` (11/11) pass.
-- Earlier throughput measurement (same backend code, NIXL e77af99, 2 ranks, 400G
+- Earlier throughput measurement (same backend code, NIXL e77af99, 2 DAOS 2.9.100 ranks, 400G
   verbs): 34.17 GB/s reading 4.69 GiB.
 
 ## Checklist

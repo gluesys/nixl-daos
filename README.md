@@ -16,8 +16,8 @@ Dynamo/KVBM and the LMCache NIXL backend.
 
 ## What has been measured
 
-- **34.17 GB/s** reading 4.69 GiB (120 objects x 40 layers x 1 MiB) from 2 DAOS 2.8
-  ranks over 400G verbs. Without folding the 40 layers into one RPC: 14.40 GB/s.
+- **34.17 GB/s** reading 4.69 GiB (120 objects x 40 layers x 1 MiB) from 2 DAOS ranks
+  (2.9.100 development build) over 400G verbs. Without folding the 40 layers into one RPC: 14.40 GB/s.
 - DFS costs 0.63 ms fixed per object, the object API 0.0137 ms, on the same 4800
   reads of 1 MiB.
 - With `daos_server` killed mid-read, the event-queue deadline returns in 8 s with
@@ -25,10 +25,14 @@ Dynamo/KVBM and the LMCache NIXL backend.
 - On NIXL main, against an upstream DAOS 2.8.0-6 server (1 rank, `ofi+tcp`), the
   `reg`, `xfer` and `agent` tests pass.
 
-The design, the descriptor mapping and the method behind each number are in
-[`src/plugins/daos/README.md`](src/plugins/daos/README.md). The full measurement
-reports (in Korean) are in
-[gluesys/lmcache-daos `doc/`](https://github.com/gluesys/lmcache-daos/tree/main/doc).
+The design and the descriptor mapping are in
+[`src/plugins/daos/README.md`](src/plugins/daos/README.md). The full reports, with
+method, raw numbers and the conclusions later retracted, are in
+[`doc/measurements/`](doc/measurements/):
+[throughput](doc/measurements/NIXL-DAOS-MEASUREMENT.md),
+[DFS vs object API, folding](doc/measurements/LAYERWISE-MEASUREMENT.md),
+[failure modes](doc/measurements/FAILURE-MODES.md) and
+[GPU memory](doc/measurements/NIXL-DAOS-VRAM.md).
 
 ## Layout
 
@@ -39,6 +43,7 @@ reports (in Korean) are in
 | `upstream/` | the upstream submission: `integration.patch` and `apply-integration.sh` wire the plugin into a NIXL source tree; `0001-*.patch` is the commit as it will be submitted; issue and PR drafts |
 | `ci/build.sh` | builds NIXL + the plugin inside a DAOS client image and produces the runtime image `nixl-daos:dev` (`images/Dockerfile.runtime`) |
 | `ci/e2e-testbed.sh` | runs the tests from that image against an existing DAOS pool on a client host |
+| `doc/measurements/` | measurement reports behind the numbers above |
 | `doc/adr/` | design decisions specific to this repository |
 
 ## Build and test
