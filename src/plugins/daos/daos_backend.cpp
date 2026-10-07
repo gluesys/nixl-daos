@@ -1,6 +1,18 @@
 /*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
  * SPDX-License-Identifier: Apache-2.0
- * Copyright 2026 Gluesys Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 #include "daos_backend.h"
 
@@ -40,17 +52,24 @@ parseTarget(const std::string &meta, daosTarget &out) {
     std::stringstream ss(meta);
     std::string tok;
 
-    while (std::getline(ss, tok, '/'))
-        if (!tok.empty()) parts.push_back(tok);
+    while (std::getline(ss, tok, '/')) {
+        if (!tok.empty()) {
+            parts.push_back(tok);
+        }
+    }
 
-    if (parts.size() < 2 || parts.size() > 3) return false;
+    if (parts.size() < 2 || parts.size() > 3) {
+        return false;
+    }
 
     out.pool = parts[0];
     out.cont = parts[1];
 
     if (parts.size() == 3) {
         const auto dot = parts[2].find('.');
-        if (dot == std::string::npos) return false;
+        if (dot == std::string::npos) {
+            return false;
+        }
         try {
             out.oid.hi = std::stoull(parts[2].substr(0, dot));
             out.oid.lo = std::stoull(parts[2].substr(dot + 1));
@@ -74,7 +93,9 @@ nixlDaosThreadPool::nixlDaosThreadPool(unsigned n) {
                 {
                     std::unique_lock<std::mutex> g(m_);
                     cv_.wait(g, [this] { return stop_ || !q_.empty(); });
-                    if (stop_ && q_.empty()) return;
+                    if (stop_ && q_.empty()) {
+                        return;
+                    }
                     job = std::move(q_.front());
                     q_.pop();
                 }
@@ -90,8 +111,11 @@ nixlDaosThreadPool::~nixlDaosThreadPool() {
         stop_ = true;
     }
     cv_.notify_all();
-    for (auto &t : workers_)
-        if (t.joinable()) t.join();
+    for (auto &t : workers_) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
 }
 
 void
@@ -133,8 +157,11 @@ nixlDaosEngine::nixlDaosEngine(const nixlBackendInitParams *init_params)
     unsigned nthreads = 64;
     if (const char *env = std::getenv("NIXL_DAOS_THREADS")) {
         const int v = std::atoi(env);
-        if (v > 0 && v <= 512) nthreads = static_cast<unsigned>(v);
-        else NIXL_WARN << "NIXL_DAOS_THREADS=" << env << " ignored (expected 1..512)";
+        if (v > 0 && v <= 512) {
+            nthreads = static_cast<unsigned>(v);
+        } else {
+            NIXL_WARN << "NIXL_DAOS_THREADS=" << env << " ignored (expected 1..512)";
+        }
     }
     pool_ = std::make_unique<nixlDaosThreadPool>(nthreads);
     NIXL_DEBUG << "DAOS backend: " << nthreads << " IO threads";
@@ -148,21 +175,22 @@ nixlDaosEngine::~nixlDaosEngine() {
     {
         std::lock_guard<std::mutex> g(mtx_);
         for (auto &kv : conts_) {
-            if (kv.second.refs > 0)
-                NIXL_WARN << "DAOS container " << kv.first << " still had "
-                          << kv.second.refs << " registration(s) at shutdown";
+            if (kv.second.refs > 0) {
+                NIXL_WARN << "DAOS container " << kv.first << " still had " << kv.second.refs
+                          << " registration(s) at shutdown";
+            }
             daos_cont_close(kv.second.coh, nullptr);
             daos_pool_disconnect(kv.second.poh, nullptr);
         }
         conts_.clear();
     }
-    if (daosInited_) daos_fini();
+    if (daosInited_) {
+        daos_fini();
+    }
 }
 
 nixl_status_t
-nixlDaosEngine::getCont(const std::string &pool,
-                        const std::string &cont,
-                        contHandles *&out) {
+nixlDaosEngine::getCont(const std::string &pool, const std::string &cont, contHandles *&out) {
     const std::string key = pool + "/" + cont;
     auto it = conts_.find(key);
 
@@ -195,9 +223,13 @@ void
 nixlDaosEngine::putCont(const std::string &pool, const std::string &cont) {
     const std::string key = pool + "/" + cont;
     auto it = conts_.find(key);
-    if (it == conts_.end()) return;
+    if (it == conts_.end()) {
+        return;
+    }
 
-    if (--it->second.refs > 0) return;
+    if (--it->second.refs > 0) {
+        return;
+    }
 
     daos_cont_close(it->second.coh, nullptr);
     daos_pool_disconnect(it->second.poh, nullptr);
@@ -220,12 +252,18 @@ nixlDaosEngine::registerMem(const nixlBlobDesc &mem,
      * is supplied in daos_mem_attr_t::ma_rkey -- which is the path that avoids
      * double registration when cuFile already owns the buffer, and is left for
      * when there is a cuFile-registered pool to test against. */
-    if (nixl_mem == DRAM_SEG) return NIXL_SUCCESS;
+    if (nixl_mem == DRAM_SEG) {
+        return NIXL_SUCCESS;
+    }
 #ifdef NIXL_DAOS_HAVE_GPU
-    if (nixl_mem == VRAM_SEG) return NIXL_SUCCESS;
+    if (nixl_mem == VRAM_SEG) {
+        return NIXL_SUCCESS;
+    }
 #endif
 
-    if (nixl_mem != FILE_SEG) return NIXL_ERR_NOT_SUPPORTED;
+    if (nixl_mem != FILE_SEG) {
+        return NIXL_ERR_NOT_SUPPORTED;
+    }
 
     daosTarget t;
     if (!parseTarget(mem.metaInfo, t)) {
@@ -239,7 +277,9 @@ nixlDaosEngine::registerMem(const nixlBlobDesc &mem,
 
     contHandles *ch = nullptr;
     const nixl_status_t st = getCont(t.pool, t.cont, ch);
-    if (st != NIXL_SUCCESS) return st;
+    if (st != NIXL_SUCCESS) {
+        return st;
+    }
 
     daos_obj_id_t oid = t.oid;
     if (!t.haveOid) {
@@ -248,8 +288,7 @@ nixlDaosEngine::registerMem(const nixlBlobDesc &mem,
          * cache cannot find what it stored. */
         oid.hi = 0;
         oid.lo = mem.devId;
-        const int rc =
-            daos_obj_generate_oid(ch->coh, &oid, DAOS_OT_MULTI_HASHED, OC_UNKNOWN, 0, 0);
+        const int rc = daos_obj_generate_oid(ch->coh, &oid, DAOS_OT_MULTI_HASHED, OC_UNKNOWN, 0, 0);
         if (rc != 0) {
             NIXL_ERROR << "daos_obj_generate_oid failed: " << rc;
             putCont(t.pool, t.cont);
@@ -272,15 +311,21 @@ nixlDaosEngine::registerMem(const nixlBlobDesc &mem,
 nixl_status_t
 nixlDaosEngine::deregisterMem(nixlBackendMD *meta) {
     /* DRAM registrations produced no metadata; nothing to undo. */
-    if (meta == nullptr) return NIXL_SUCCESS;
+    if (meta == nullptr) {
+        return NIXL_SUCCESS;
+    }
 
     auto *md = dynamic_cast<nixlDaosObjMD *>(meta);
-    if (md == nullptr) return NIXL_ERR_INVALID_PARAM;
+    if (md == nullptr) {
+        return NIXL_ERR_INVALID_PARAM;
+    }
 
     std::lock_guard<std::mutex> g(mtx_);
 
     const int rc = daos_obj_close(md->oh_, nullptr);
-    if (rc != 0) NIXL_ERROR << "daos_obj_close failed: " << rc;
+    if (rc != 0) {
+        NIXL_ERROR << "daos_obj_close failed: " << rc;
+    }
 
     putCont(md->pool_, md->cont_);
     delete md;
@@ -309,11 +354,13 @@ nixlDaosEngine::prepXfer(const nixl_xfer_op_t &operation,
     handle = nullptr;
 
     if (local.descCount() != remote.descCount()) {
-        NIXL_ERROR << "DAOS: descriptor counts differ (local " << local.descCount()
-                   << ", remote " << remote.descCount() << ")";
+        NIXL_ERROR << "DAOS: descriptor counts differ (local " << local.descCount() << ", remote "
+                   << remote.descCount() << ")";
         return NIXL_ERR_INVALID_PARAM;
     }
-    if (local.descCount() == 0) return NIXL_ERR_INVALID_PARAM;
+    if (local.descCount() == 0) {
+        return NIXL_ERR_INVALID_PARAM;
+    }
 
     /* First pass: bucket by (object handle, dkey) without touching the DAOS
      * structures, so the vectors can be sized exactly before any pointer into
@@ -324,8 +371,8 @@ nixlDaosEngine::prepXfer(const nixl_xfer_op_t &operation,
         void *buf;
         uint64_t localDev; /* CUDA ordinal when the local side is VRAM */
     };
-    std::map<std::pair<uint64_t, uint64_t>, std::pair<daos_handle_t, std::vector<entry>>>
-        buckets;
+
+    std::map<std::pair<uint64_t, uint64_t>, std::pair<daos_handle_t, std::vector<entry>>> buckets;
 
     auto li = local.begin();
     auto ri = remote.begin();
@@ -337,8 +384,8 @@ nixlDaosEngine::prepXfer(const nixl_xfer_op_t &operation,
             return NIXL_ERR_INVALID_PARAM;
         }
         if (li->len != ri->len) {
-            NIXL_ERROR << "DAOS: paired descriptors differ in length (" << li->len
-                       << " vs " << ri->len << ")";
+            NIXL_ERROR << "DAOS: paired descriptors differ in length (" << li->len << " vs "
+                       << ri->len << ")";
             return NIXL_ERR_INVALID_PARAM;
         }
 
@@ -346,8 +393,7 @@ nixlDaosEngine::prepXfer(const nixl_xfer_op_t &operation,
         const uint64_t akey = ri->addr % dkeySpan_;
         auto &slot = buckets[{md->devId_, dkey}];
         slot.first = md->oh_;
-        slot.second.push_back(
-            {akey, ri->len, reinterpret_cast<void *>(li->addr), li->devId});
+        slot.second.push_back({akey, ri->len, reinterpret_cast<void *>(li->addr), li->devId});
     }
 
     auto req = std::make_unique<nixlDaosBackendReqH>();
@@ -417,17 +463,18 @@ nixlDaosEngine::prepXfer(const nixl_xfer_op_t &operation,
 /*
  * Optional event-queue path, off by default.
  *
- * doc/FAILURE-MODES.md measured why it is wanted: when the engine is killed
- * mid-write, a blocking daos_obj_update() never returns -- 16 of 16 threads
- * still inside the call at 150 s -- while the same work submitted to an event
- * queue and polled with a timeout released every thread at 5.01 s, and the
+ * https://github.com/gluesys/lmcache-daos/blob/main/doc/FAILURE-MODES.md measured why it is wanted:
+ * when the engine is killed mid-write, a blocking daos_obj_update() never returns -- 16 of 16
+ * threads still inside the call at 150 s -- while the same work submitted to an event queue and
+ * polled with a timeout released every thread at 5.01 s, and the
  * daos_event_abort()/daos_event_fini() that tidies up cost 0.00 s each.
  *
- * The original rejection (doc/DESIGN-AND-VALIDATION.md) measured 1 EQ capping
- * at ~12.5 GB/s and 16 EQs collapsing to 2.74, against 34-35 GB/s blocking --
- * but on the DFS async path through Python with 28 MiB reads, which is not
- * this. It does not transfer. Measured on client-5 against cell1/cell2, 400G
- * verbs, the regime that rejection came from, four runs each:
+ * The original rejection
+ * (https://github.com/gluesys/lmcache-daos/blob/main/doc/DESIGN-AND-VALIDATION.md) measured 1 EQ
+ * capping at ~12.5 GB/s and 16 EQs collapsing to 2.74, against 34-35 GB/s blocking -- but on the
+ * DFS async path through Python with 28 MiB reads, which is not this. It does not transfer.
+ * Measured on client-5 against cell1/cell2, 400G verbs, the regime that rejection came from, four
+ * runs each:
  *
  *   blocking   31.29  31.00  30.70  31.15    mean 31.04 GB/s
  *   event queue 30.44  31.27  30.23  30.61   mean 30.64 GB/s
@@ -453,7 +500,7 @@ double
 nixlDaosEqTimeout() {
     static const double t = [] {
         const char *e = std::getenv("NIXL_DAOS_EQ_TIMEOUT");
-        return e ? std::atof(e) : 60.0;   /* 0 in the environment disables it */
+        return e ? std::atof(e) : 60.0; /* 0 in the environment disables it */
     }();
     return t;
 }
@@ -486,10 +533,13 @@ nixlDaosEqTimeout() {
 class nixlDaosEqPool {
 public:
     ~nixlDaosEqPool() {
-        for (auto h : all_) daos_eq_destroy(h, 0);
+        for (auto h : all_) {
+            daos_eq_destroy(h, 0);
+        }
     }
 
-    bool borrow(daos_handle_t &out) {
+    bool
+    borrow(daos_handle_t &out) {
         {
             std::lock_guard<std::mutex> g(m_);
             if (!free_.empty()) {
@@ -501,7 +551,9 @@ public:
         /* Created outside the lock: daos_eq_create() talks to the client
          * library and is far too slow to hold a mutex across. */
         daos_handle_t h{};
-        if (daos_eq_create(&h) != 0) return false;
+        if (daos_eq_create(&h) != 0) {
+            return false;
+        }
         {
             std::lock_guard<std::mutex> g(m_);
             all_.push_back(h);
@@ -510,15 +562,16 @@ public:
         return true;
     }
 
-    void giveBack(daos_handle_t h) {
+    void
+    giveBack(daos_handle_t h) {
         std::lock_guard<std::mutex> g(m_);
         free_.push_back(h);
     }
 
 private:
     std::mutex m_;
-    std::vector<daos_handle_t> free_;  /* available now */
-    std::vector<daos_handle_t> all_;   /* every EQ ever made, for teardown */
+    std::vector<daos_handle_t> free_; /* available now */
+    std::vector<daos_handle_t> all_; /* every EQ ever made, for teardown */
 };
 
 /*
@@ -539,8 +592,12 @@ nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
                          nixlBackendReqH *&handle,
                          const nixl_opt_b_args_t *opt_args) const {
     auto *req = dynamic_cast<nixlDaosBackendReqH *>(handle);
-    if (req == nullptr) return NIXL_ERR_INVALID_PARAM;
-    if (req->groups.empty()) return NIXL_SUCCESS;
+    if (req == nullptr) {
+        return NIXL_ERR_INVALID_PARAM;
+    }
+    if (req->groups.empty()) {
+        return NIXL_SUCCESS;
+    }
 
     req->status.store(NIXL_SUCCESS);
     req->pending.store(static_cast<unsigned>(req->groups.size()));
@@ -566,12 +623,16 @@ nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
                  * improvement on the failure path, never a prerequisite for
                  * doing the I/O. */
                 if (eqPool_->borrow(eq)) {
-                    if (daos_event_init(&ev, eq, nullptr) == 0) useEq = true;
-                    else eqPool_->giveBack(eq);
+                    if (daos_event_init(&ev, eq, nullptr) == 0) {
+                        useEq = true;
+                    } else {
+                        eqPool_->giveBack(eq);
+                    }
                 }
-                if (!useEq)
+                if (!useEq) {
                     NIXL_ERROR << "DAOS: no event queue available, "
                                   "falling back to a blocking call";
+                }
             }
             daos_event_t *evArg = useEq ? &ev : nullptr;
 #ifdef NIXL_DAOS_HAVE_GPU
@@ -587,26 +648,50 @@ nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
                  *   update_gpu  dc_obj_update_task_create(oh, th, flags|GPU_DIRECT, ..., ev, ...)
                  *
                  * So the nullptr below is a choice, not a constraint, and it
-                 * is currently the wrong one: doc/FAILURE-MODES.md measured the
-                 * event queue as the only bounded way out of a dead engine
-                 * (16/16 threads lost blocking, 0/16 with a poll timeout). The
-                 * VRAM_SEG path can have that escape; it just does not yet. */
-                rc = req->op == NIXL_READ
-                         ? daos_obj_fetch_gpu(gp->oh, DAOS_TX_NONE, 0, &dkey, nr,
-                                              gp->iods.data(), gp->sgls.data(),
-                                              gp->memAttrs.data(), nullptr, evArg)
-                         : daos_obj_update_gpu(gp->oh, DAOS_TX_NONE, 0, &dkey, nr,
-                                               gp->iods.data(), gp->sgls.data(),
-                                               gp->memAttrs.data(), evArg);
+                 * is currently the wrong one:
+                 * https://github.com/gluesys/lmcache-daos/blob/main/doc/FAILURE-MODES.md measured
+                 * the event queue as the only bounded way out of a dead engine (16/16 threads lost
+                 * blocking, 0/16 with a poll timeout). The VRAM_SEG path can have that escape; it
+                 * just does not yet. */
+                rc = req->op == NIXL_READ ? daos_obj_fetch_gpu(gp->oh,
+                                                               DAOS_TX_NONE,
+                                                               0,
+                                                               &dkey,
+                                                               nr,
+                                                               gp->iods.data(),
+                                                               gp->sgls.data(),
+                                                               gp->memAttrs.data(),
+                                                               nullptr,
+                                                               evArg) :
+                                            daos_obj_update_gpu(gp->oh,
+                                                                DAOS_TX_NONE,
+                                                                0,
+                                                                &dkey,
+                                                                nr,
+                                                                gp->iods.data(),
+                                                                gp->sgls.data(),
+                                                                gp->memAttrs.data(),
+                                                                evArg);
             } else
 #endif
             {
-                rc = req->op == NIXL_READ
-                         ? daos_obj_fetch(gp->oh, DAOS_TX_NONE, 0, &dkey, nr,
-                                          gp->iods.data(), gp->sgls.data(), nullptr,
-                                          evArg)
-                         : daos_obj_update(gp->oh, DAOS_TX_NONE, 0, &dkey, nr,
-                                           gp->iods.data(), gp->sgls.data(), evArg);
+                rc = req->op == NIXL_READ ? daos_obj_fetch(gp->oh,
+                                                           DAOS_TX_NONE,
+                                                           0,
+                                                           &dkey,
+                                                           nr,
+                                                           gp->iods.data(),
+                                                           gp->sgls.data(),
+                                                           nullptr,
+                                                           evArg) :
+                                            daos_obj_update(gp->oh,
+                                                            DAOS_TX_NONE,
+                                                            0,
+                                                            &dkey,
+                                                            nr,
+                                                            gp->iods.data(),
+                                                            gp->sgls.data(),
+                                                            evArg);
             }
 
             if (useEq) {
@@ -617,9 +702,8 @@ nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
                      * than leaving DAOS holding a pointer into a stack frame
                      * that is about to go away. Both calls measured at 0.00 s
                      * against a dead engine. */
-                    const int n = daos_eq_poll(eq, 1,
-                                               static_cast<int64_t>(eqTimeout * 1e6),
-                                               1, &evp);
+                    const int n =
+                        daos_eq_poll(eq, 1, static_cast<int64_t>(eqTimeout * 1e6), 1, &evp);
                     if (n == 0) {
                         NIXL_ERROR << "DAOS: no completion in " << eqTimeout
                                    << "s, abandoning the request";
@@ -660,13 +744,19 @@ nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
 nixl_status_t
 nixlDaosEngine::checkXfer(nixlBackendReqH *handle) const {
     auto *req = dynamic_cast<nixlDaosBackendReqH *>(handle);
-    if (req == nullptr) return NIXL_ERR_INVALID_PARAM;
+    if (req == nullptr) {
+        return NIXL_ERR_INVALID_PARAM;
+    }
 
     /* Prepared but not posted: nothing is running, so nothing can have
      * finished. Saying SUCCESS here would let a caller act on data that was
      * never fetched. */
-    if (!req->posted) return NIXL_IN_PROG;
-    if (req->pending.load() != 0) return NIXL_IN_PROG;
+    if (!req->posted) {
+        return NIXL_IN_PROG;
+    }
+    if (req->pending.load() != 0) {
+        return NIXL_IN_PROG;
+    }
 
     return static_cast<nixl_status_t>(req->status.load());
 }
@@ -674,12 +764,16 @@ nixlDaosEngine::checkXfer(nixlBackendReqH *handle) const {
 nixl_status_t
 nixlDaosEngine::releaseReqH(nixlBackendReqH *handle) const {
     auto *req = dynamic_cast<nixlDaosBackendReqH *>(handle);
-    if (req == nullptr) return NIXL_ERR_INVALID_PARAM;
+    if (req == nullptr) {
+        return NIXL_ERR_INVALID_PARAM;
+    }
 
     /* DAOS has no cancel for a blocking call already in flight, so the only
      * safe way out is to let it finish: the group vectors the workers read
      * from die with this object. */
-    if (req->posted) req->waitDone();
+    if (req->posted) {
+        req->waitDone();
+    }
 
     delete req;
     return NIXL_SUCCESS;

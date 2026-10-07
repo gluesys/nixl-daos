@@ -1,31 +1,57 @@
-Build-system integration for the DAOS plugin, against ai-dynamo/nixl main.
-
-Three edits; the plugin sources themselves live in plugin/ and are copied to
-src/plugins/daos/. Kept as a patch rather than a fork because it is small and
-because upstream may take the plugin, at which point this file disappears.
-
+diff --git a/meson.build b/meson.build
+index ad264ca..c4b37f4 100644
 --- a/meson.build
 +++ b/meson.build
-@@ all_plugins
--all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', ...
-+all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'DAOS', 'OBJ', ...
-
-@@ before "# Check for POSIX aio"
-+# DAOS client library. Looked up here rather than in the plugin so the gate in
-+# src/plugins/meson.build can skip the subdir when it is absent.
-+daos_dep = meson.get_compiler('cpp').find_library('daos', required: false)
-+
- # Check for POSIX aio
-
+@@ -29,7 +29,7 @@ if enable_plugins_opt != '' and disable_plugins_opt != ''
+     error('Cannot specify both enable_plugins and disable_plugins options')
+ endif
+ 
+-all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'REDIS', 'GDS', 'GDS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB', 'INFINIA', 'TELEMETRY_DOCA']
++all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'REDIS', 'GDS', 'GDS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB', 'INFINIA', 'DAOS', 'TELEMETRY_DOCA']
+ 
+ enabled_plugins = {}
+ 
+diff --git a/meson_options.txt b/meson_options.txt
+index 791a532..686a723 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -21,6 +21,8 @@ option('disable_gds_backend', type : 'boolean', value : false, description : 'di
+ option('disable_mooncake_backend', type : 'boolean', value : false, description : 'disable mooncake backend')
+ option('disable_infinia_backend', type : 'boolean', value : false, description : 'disable infinia backend')
+ option('infinia_path', type: 'string', value: '/opt/ddn/red/', description: 'Path to Infinia client install')
++option('disable_daos_backend', type : 'boolean', value : false, description : 'disable DAOS backend')
++option('daos_path', type: 'string', value: '', description: 'Path to a DAOS client install (include/ and lib64/); empty searches the default paths')
+ option('install_headers', type : 'boolean', value : true, description : 'install headers')
+ option('gds_path', type: 'string', value: '/usr/local/cuda/', description: 'Path to GDS CuFile install')
+ option('cudapath_inc', type: 'string', value: '', description: 'Include path for CUDA')
+diff --git a/src/plugins/meson.build b/src/plugins/meson.build
+index bee09bd..052cdfa 100644
 --- a/src/plugins/meson.build
 +++ b/src/plugins/meson.build
-@@ before the OBJ block
+@@ -102,6 +102,11 @@ if enabled_plugins.get('INFINIA')
+     subdir('infinia')
+ endif
+ 
 +if enabled_plugins.get('DAOS')
++    # The DAOS client lookup lives inside the subdir
 +    subdir('daos')
 +endif
 +
- if enabled_plugins.get('OBJ')
-
-Note: `cc` is not yet defined at that point in the root meson.build -- it is
-introduced later, in src/plugins/meson.build -- so the lookup must use
-meson.get_compiler('cpp') directly.
+ gusli_lib_file = 'gusli_clnt'
+ gusli_lib_found = cc.find_library(gusli_lib_file, required: false)
+ if enabled_plugins.get('GUSLI')
+diff --git a/test/unit/plugins/meson.build b/test/unit/plugins/meson.build
+index 7d6a9f0..6e5b6ec 100644
+--- a/test/unit/plugins/meson.build
++++ b/test/unit/plugins/meson.build
+@@ -73,6 +73,10 @@ if is_variable('infinia_backend_interface')
+     subdir('infinia')
+ endif
+ 
++if is_variable('daos_backend_interface')
++    subdir('daos')
++endif
++
+ gusli_lib_path = '/usr/lib/'
+ gusli_lib_file = 'gusli_clnt'
+ gusli_lib_found = cc.find_library(gusli_lib_file, dirs: [gusli_lib_path], required: false)

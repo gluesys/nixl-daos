@@ -1,18 +1,28 @@
 /*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
  * SPDX-License-Identifier: Apache-2.0
- * Copyright 2026 Gluesys Co., Ltd.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
  */
 /*
  * NIXL backend for DAOS.
  *
  * Storage model: the raw object API, not DFS. Measured on the testbed
- * (doc/LAYERWISE-MEASUREMENT.md), the per-object cost is
- *     DFS         0.63   ms + 0.067  ms/MiB
- *     object API  0.0137 ms + 0.0385 ms/MiB
- * so DFS spends ~90% of a 1 MiB read on overhead dkey/akey does not pay. The
- * object API also folds a whole descriptor list into one daos_obj_fetch() via
- * its iod array -- exactly the shape prepXfer() hands us, and something a
- * file-per-object model cannot express.
+ * (https://github.com/gluesys/lmcache-daos/blob/main/doc/LAYERWISE-MEASUREMENT.md), the per-object
+ * cost is DFS         0.63   ms + 0.067  ms/MiB object API  0.0137 ms + 0.0385 ms/MiB so DFS spends
+ * ~90% of a 1 MiB read on overhead dkey/akey does not pay. The object API also folds a whole
+ * descriptor list into one daos_obj_fetch() via its iod array -- exactly the shape prepXfer() hands
+ * us, and something a file-per-object model cannot express.
  *
  * Descriptor mapping. nixlBasicDesc carries only addr/len/devId, and
  * nixlBlobDesc adds metaInfo:
@@ -258,9 +268,7 @@ public:
 
     /* ---- implemented ----------------------------------------------------- */
     nixl_status_t
-    registerMem(const nixlBlobDesc &mem,
-                const nixl_mem_t &nixl_mem,
-                nixlBackendMD *&out) override;
+    registerMem(const nixlBlobDesc &mem, const nixl_mem_t &nixl_mem, nixlBackendMD *&out) override;
 
     nixl_status_t
     deregisterMem(nixlBackendMD *meta) override;
@@ -314,7 +322,7 @@ private:
      * treats a transfer as not mutating the engine, which is true of every
      * field except this one. Sized from NIXL_DAOS_THREADS, default 64, which
      * is where throughput stops improving on the testbed -- see
-     * doc/NIXL-DAOS-MEASUREMENT.md. */
+     * https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-MEASUREMENT.md. */
     mutable std::unique_ptr<nixlDaosThreadPool> pool_;
 
     /* Event queues, borrowed per request. Only used when NIXL_DAOS_EQ_TIMEOUT

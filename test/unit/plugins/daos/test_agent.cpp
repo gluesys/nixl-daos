@@ -1,5 +1,19 @@
-/* SPDX-License-Identifier: Apache-2.0 */
-/* Copyright 2026 Gluesys Co., Ltd. */
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 /*
  * The DAOS backend under a real nixlAgent, rather than driven directly.
  *
@@ -33,19 +47,26 @@ static int fails = 0;
 
 static void
 ck(const char *what, bool ok) {
-    if (!ok) fails++;
+    if (!ok) {
+        fails++;
+    }
     printf("  %-54s %s\n", what, ok ? "PASS" : "FAIL");
 }
 
 static void
 fill(uint64_t *p, size_t bytes, uint64_t tag) {
-    for (size_t i = 0; i < bytes / 8; i++) p[i] = (tag << 40) | i;
+    for (size_t i = 0; i < bytes / 8; i++) {
+        p[i] = (tag << 40) | i;
+    }
 }
 
 static size_t
 firstBad(const uint64_t *p, size_t bytes, uint64_t tag) {
-    for (size_t i = 0; i < bytes / 8; i++)
-        if (p[i] != ((tag << 40) | i)) return i;
+    for (size_t i = 0; i < bytes / 8; i++) {
+        if (p[i] != ((tag << 40) | i)) {
+            return i;
+        }
+    }
     return SIZE_MAX;
 }
 
@@ -64,10 +85,15 @@ main(int argc, char **argv) {
     std::vector<nixl_backend_t> plugins;
     ck("getAvailPlugins", agent.getAvailPlugins(plugins) == NIXL_SUCCESS);
     bool haveDaos = false;
-    for (auto &p : plugins)
-        if (p == "DAOS") haveDaos = true;
+    for (auto &p : plugins) {
+        if (p == "DAOS") {
+            haveDaos = true;
+        }
+    }
     printf("  plugins:");
-    for (auto &p : plugins) printf(" %s", p.c_str());
+    for (auto &p : plugins) {
+        printf(" %s", p.c_str());
+    }
     printf("\n");
     ck("DAOS plugin is discovered by the agent", haveDaos);
     if (!haveDaos) {
@@ -140,8 +166,11 @@ main(int argc, char **argv) {
         const size_t bad = firstBad(rbuf[i].data(), chunk, 0xC0 + i);
         if (bad != SIZE_MAX) {
             all = false;
-            printf("    layer %d: word %zu = 0x%lx, expected 0x%lx\n", i, bad,
-                   rbuf[i][bad], (uint64_t)((0xC0 + i) << 40 | bad));
+            printf("    layer %d: word %zu = 0x%lx, expected 0x%lx\n",
+                   i,
+                   bad,
+                   rbuf[i][bad],
+                   ((uint64_t)(0xC0 + i) << 40 | bad));
         }
     }
     ck("payload identical through the agent", all);
@@ -149,7 +178,9 @@ main(int argc, char **argv) {
     ck("deregisterMem(DRAM_SEG)", agent.deregisterMem(dramReg, &ext) == NIXL_SUCCESS);
     ck("deregisterMem(FILE_SEG)", agent.deregisterMem(fileReg, &ext) == NIXL_SUCCESS);
 
-    printf("\n  === %s (%d failure%s) ===\n", fails ? "FAILED" : "ALL PASS", fails,
+    printf("\n  === %s (%d failure%s) ===\n",
+           fails ? "FAILED" : "ALL PASS",
+           fails,
            fails == 1 ? "" : "s");
     return fails ? 1 : 0;
 }

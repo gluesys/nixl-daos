@@ -1,5 +1,19 @@
-/* SPDX-License-Identifier: Apache-2.0 */
-/* Copyright 2026 Gluesys Co., Ltd. */
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 /* registerMem/deregisterMem against a live DAOS pool, driven directly (no
  * agent) so a failure points at the backend rather than at NIXL plumbing. */
 #include <cstdio>
@@ -7,13 +21,18 @@
 #include "daos_backend.h"
 
 static int fails = 0;
-static void ck(const char *what, nixl_status_t got, nixl_status_t want) {
+
+static void
+ck(const char *what, nixl_status_t got, nixl_status_t want) {
     bool ok = (got == want);
-    if (!ok) fails++;
+    if (!ok) {
+        fails++;
+    }
     printf("  %-46s got=%d want=%d  %s\n", what, (int)got, (int)want, ok ? "PASS" : "FAIL");
 }
 
-int main(int argc, char **argv) {
+int
+main(int argc, char **argv) {
     const std::string pool = argc > 1 ? argv[1] : "kvpool";
     const std::string cont = argc > 2 ? argv[2] : "nixltest";
 
@@ -30,9 +49,12 @@ int main(int argc, char **argv) {
 
     nixlBlobDesc dram(0, 4096, 0);
     ck("DRAM_SEG register (no metadata expected)",
-       eng.registerMem(dram, DRAM_SEG, mdd), NIXL_SUCCESS);
+       eng.registerMem(dram, DRAM_SEG, mdd),
+       NIXL_SUCCESS);
     printf("  %-46s %s\n", "DRAM metadata is null", mdd == nullptr ? "PASS" : "FAIL");
-    if (mdd != nullptr) fails++;
+    if (mdd != nullptr) {
+        fails++;
+    }
 
     nixlBlobDesc bad(0, 0, 1);
     bad.metaInfo = "onlypool";
@@ -46,7 +68,8 @@ int main(int argc, char **argv) {
     nixlBlobDesc o2(0, 0, 1002);
     o2.metaInfo = pool + "/" + cont;
     ck("register object devId=1002 (same container)",
-       eng.registerMem(o2, FILE_SEG, md2), NIXL_SUCCESS);
+       eng.registerMem(o2, FILE_SEG, md2),
+       NIXL_SUCCESS);
 
     if (md1 && md2) {
         auto *a = dynamic_cast<nixlDaosObjMD *>(md1);
@@ -55,7 +78,9 @@ int main(int argc, char **argv) {
         printf("  oid(1002) = %lu.%lu\n", b->oid_.hi, b->oid_.lo);
         bool distinct = !(a->oid_.hi == b->oid_.hi && a->oid_.lo == b->oid_.lo);
         printf("  %-46s %s\n", "distinct devId -> distinct oid", distinct ? "PASS" : "FAIL");
-        if (!distinct) fails++;
+        if (!distinct) {
+            fails++;
+        }
     }
 
     ck("deregister 1001", eng.deregisterMem(md1), NIXL_SUCCESS);
@@ -67,15 +92,16 @@ int main(int argc, char **argv) {
     nixlBackendMD *md3 = nullptr;
     nixlBlobDesc o3(0, 0, 1001);
     o3.metaInfo = pool + "/" + cont;
-    ck("re-register 1001 after container closed",
-       eng.registerMem(o3, FILE_SEG, md3), NIXL_SUCCESS);
+    ck("re-register 1001 after container closed", eng.registerMem(o3, FILE_SEG, md3), NIXL_SUCCESS);
     if (md3) {
         auto *c = dynamic_cast<nixlDaosObjMD *>(md3);
         printf("  oid(1001) again = %lu.%lu\n", c->oid_.hi, c->oid_.lo);
     }
     ck("deregister again", eng.deregisterMem(md3), NIXL_SUCCESS);
 
-    printf("\n  === %s (%d failure%s) ===\n", fails ? "FAILED" : "ALL PASS", fails,
+    printf("\n  === %s (%d failure%s) ===\n",
+           fails ? "FAILED" : "ALL PASS",
+           fails,
            fails == 1 ? "" : "s");
     return fails ? 1 : 0;
 }

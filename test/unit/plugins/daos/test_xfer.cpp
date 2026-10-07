@@ -1,5 +1,19 @@
-/* SPDX-License-Identifier: Apache-2.0 */
-/* Copyright 2026 Gluesys Co., Ltd. */
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 /*
  * Write-then-read round trip through the DAOS backend, driven directly so a
  * failure points at the backend rather than at NIXL's agent plumbing.
@@ -24,19 +38,26 @@ static int fails = 0;
 
 static void
 ck(const char *what, bool ok) {
-    if (!ok) fails++;
+    if (!ok) {
+        fails++;
+    }
     printf("  %-52s %s\n", what, ok ? "PASS" : "FAIL");
 }
 
 static void
 fill(uint64_t *p, size_t bytes, uint64_t tag) {
-    for (size_t i = 0; i < bytes / 8; i++) p[i] = (tag << 40) | i;
+    for (size_t i = 0; i < bytes / 8; i++) {
+        p[i] = (tag << 40) | i;
+    }
 }
 
 static size_t
 firstBad(const uint64_t *p, size_t bytes, uint64_t tag) {
-    for (size_t i = 0; i < bytes / 8; i++)
-        if (p[i] != ((tag << 40) | i)) return i;
+    for (size_t i = 0; i < bytes / 8; i++) {
+        if (p[i] != ((tag << 40) | i)) {
+            return i;
+        }
+    }
     return SIZE_MAX;
 }
 
@@ -47,7 +68,9 @@ runXfer(nixlDaosEngine &eng,
         const nixl_meta_dlist_t &rem) {
     nixlBackendReqH *h = nullptr;
     nixl_status_t st = eng.prepXfer(op, loc, rem, "", h);
-    if (st != NIXL_SUCCESS) return st;
+    if (st != NIXL_SUCCESS) {
+        return st;
+    }
 
     st = eng.postXfer(op, loc, rem, "", h);
     if (st != NIXL_IN_PROG && st != NIXL_SUCCESS) {
@@ -73,7 +96,7 @@ main(int argc, char **argv) {
     const std::string pool = argc > 1 ? argv[1] : "kvpool";
     const std::string cont = argc > 2 ? argv[2] : "nixltest";
 
-    const int nDesc = 8;             /* 8 akeys under one dkey -> one RPC */
+    const int nDesc = 8; /* 8 akeys under one dkey -> one RPC */
     const size_t chunk = 256 * 1024; /* 2 MiB total, fits the 6.5 GB pool */
 
     nixl_b_params_t custom;
@@ -115,7 +138,10 @@ main(int argc, char **argv) {
         if (bad != SIZE_MAX) {
             all = false;
             printf("    desc %d: word %zu = 0x%lx, expected 0x%lx\n",
-                   i, bad, rbuf[i][bad], (uint64_t)((0xA0 + i) << 40 | bad));
+                   i,
+                   bad,
+                   rbuf[i][bad],
+                   ((uint64_t)(0xA0 + i) << 40 | bad));
         }
     }
     ck("payload identical, every descriptor", all);
@@ -137,8 +163,7 @@ main(int argc, char **argv) {
     srem.addDesc(nixlMetaDesc(300ull << 20, chunk, 4242, md)); /* dkey 4 */
     ck("write across a dkey boundary", runXfer(eng, NIXL_WRITE, sloc, srem) == NIXL_SUCCESS);
     ck("read it back", runXfer(eng, NIXL_READ, srloc, srem) == NIXL_SUCCESS);
-    ck("payload identical across dkey boundary",
-       firstBad(sr.data(), chunk, 0xBB) == SIZE_MAX);
+    ck("payload identical across dkey boundary", firstBad(sr.data(), chunk, 0xBB) == SIZE_MAX);
 
     ck("mismatched descriptor counts rejected", [&] {
         nixlBackendReqH *h = nullptr;
@@ -149,7 +174,9 @@ main(int argc, char **argv) {
 
     ck("deregister", eng.deregisterMem(md) == NIXL_SUCCESS);
 
-    printf("\n  === %s (%d failure%s) ===\n", fails ? "FAILED" : "ALL PASS", fails,
+    printf("\n  === %s (%d failure%s) ===\n",
+           fails ? "FAILED" : "ALL PASS",
+           fails,
            fails == 1 ? "" : "s");
     return fails ? 1 : 0;
 }

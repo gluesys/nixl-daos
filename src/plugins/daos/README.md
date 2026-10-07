@@ -1,34 +1,83 @@
-<!-- SPDX-License-Identifier: Apache-2.0 -->
-<!-- Copyright 2026 Gluesys Co., Ltd. -->
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
+SPDX-License-Identifier: Apache-2.0
 
-# NIXL DAOS backend
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
 
-A storage backend plugin for [NIXL](https://github.com/ai-dynamo/nixl). NIXL
-ships 16 backends; none of them speaks DAOS, which is what this adds.
+http://www.apache.org/licenses/LICENSE-2.0
 
-Status: **registration and transfer work, and it has been measured.** On the
-400G verbs testbed it reaches **34.17 GB/s** reading 4.69 GiB; see
-[NIXL-DAOS-MEASUREMENT.md](https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-MEASUREMENT.md). All three programs in `test/unit/plugins/daos/` pass, including
-one that drives the backend through a real `nixlAgent`.
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
 
-## Why the object API and not DFS
+# NIXL DAOS Plugin
 
-[LAYERWISE-MEASUREMENT.md](https://github.com/gluesys/lmcache-daos/blob/main/doc/LAYERWISE-MEASUREMENT.md) measured the same 4800 reads of 1 MiB two ways:
+## Overview
+
+A storage backend for [DAOS](https://github.com/daos-stack/daos), the
+distributed asynchronous object store. It moves data between local memory and
+DAOS objects with the DAOS **object API** (dkey/akey), not the DFS file layer.
+
+- **Segments:** `DRAM_SEG` (local) and `FILE_SEG` (DAOS objects). `VRAM_SEG` is
+  advertised only when the DAOS client exports GPU-direct entry points (see
+  [GPU memory](#gpu-memory)).
+- **Local transfers only:** `supportsLocal()` is true, `supportsRemote()` false.
+- **Throughput:** 34.17 GB/s reading 4.69 GiB (120 objects x 40 layers x 1 MiB)
+  from 2 DAOS ranks over 400G verbs ([measurement][meas]).
+
+### Why the object API and not DFS
+
+The same 4800 reads of 1 MiB, measured both ways ([measurement][layer]):
 
 | path | fixed cost per object | marginal |
 |---|---|---|
-| DFS (`dfs_sys_read` on a flat namespace) | 0.63 ms | 0.067 ms/MiB |
-| raw object API (dkey/akey) | **0.0137 ms** | 0.0385 ms/MiB |
+| DFS (`dfs_sys_read`, flat namespace) | 0.63 ms | 0.067 ms/MiB |
+| object API (dkey/akey) | **0.0137 ms** | 0.0385 ms/MiB |
 
-At 1 MiB objects DFS spends about 90% of the time on overhead that dkey/akey
+At 1 MiB objects DFS spends about 90% of the time on overhead the object API
 does not pay. The object API also folds a whole descriptor list into one
 `daos_obj_fetch()` through its iod array, which is the shape `prepXfer()` hands
-us and which a file-per-object model cannot express.
+the backend.
 
-## Descriptor mapping
+## Dependencies
 
-`nixlBasicDesc` carries only `addr`, `len` and `devId`; `nixlBlobDesc` adds
-`metaInfo`. The backend reads them as:
+- A DAOS client: headers (`daos.h`) and `libdaos`, from the `daos-devel`
+  package or a source build. Tested with DAOS 2.8.
+- A running `daos_agent` on the host, and a DAOS pool and container the process
+  may access.
+
+## Build Instructions
+
+The plugin is built when meson finds the DAOS client and skipped with a warning
+when it does not.
+
+```bash
+# DAOS client in the default search path (e.g. the daos-devel package)
+meson setup build
+ninja -C build
+
+# DAOS client under a prefix
+meson setup build -Ddaos_path=/opt/daos
+
+# Fail instead of skipping when DAOS is missing
+meson setup build -Denable_plugins=DAOS
+
+# Never build it
+meson setup build -Ddisable_daos_backend=true
+```
+
+The plugin library is `libplugin_DAOS.so` under the NIXL plugin directory.
+
+## API Reference
+
+`nixlDaosEngine` (`daos_backend.h`) implements `nixlBackendEngine`.
+
+### Descriptor mapping
 
 | field | meaning |
 |---|---|
@@ -37,185 +86,109 @@ us and which a file-per-object model cannot express.
 | `addr` | offset within the object |
 | `len` | bytes |
 
-Deriving the object id from `devId` is deliberate: the same `devId` must name
-the same object across process restarts, or a cache cannot find what it stored.
-A test verifies that after the container handle has been closed and reopened.
+The object id is derived from `devId` so that the same key names the same
+object across process restarts; otherwise a cache could not find what it
+stored.
 
-## dkey/akey split
+Inside an object, an offset maps to
 
 ```
-dkey = addr / dkeySpan          akey = addr % dkeySpan          (dkeySpan = 64 MiB)
+dkey = addr / 64 MiB      akey = addr % 64 MiB
 ```
 
-dkey decides placement. Descriptors inside one span share a dkey, land on one
-target, and fold into a single RPC; separate spans spread across targets. Both
-halves matter, and the benchmark says why -- same 4.69 GiB, same bytes:
+Descriptors within one 64 MiB span share a dkey, land on one target and fold
+into a single RPC; separate spans spread across targets. On the same 4.69 GiB,
+40 akeys under one dkey took 204 ms, one akey per RPC 245 ms, and a single
+40 MiB akey extent 571 ms.
 
-| shape | time |
-|---|---|
-| 40 akeys under one dkey, one RPC per chunk | **204 ms** |
-| one akey per RPC | 245 ms |
-| all 40 MiB as a single akey extent | 571 ms |
+### Configuration
 
-Folding wins, but only while the data still arrives as separate akeys rather
-than one long extent. `dkeySpan` should become a plugin parameter as soon as
-there is a second workload to tune it against.
-
-## What it does not do yet
-
-- **`VRAM_SEG` is off by default, and should stay off for now.** It works --
-  device-to-device round trips are bit-identical -- but it is 3.4x *slower*
-  than staging through host memory, because CaRT re-registers the GPU buffer
-  on every transfer at about 0.43 ms per sgl entry. The escape hatch for that,
-  `daos_mem_attr_t::ma_rkey`, is only reachable from cuFile's plugin callback,
-  which a backend that calls DAOS directly never sees. See
-  [NIXL-DAOS-VRAM.md](https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-VRAM.md).
-- **Per-request overhead in the NIXL path**, roughly 0.076 ms, from the
-  `dynamic_cast`, the `std::map` in `prepXfer()`, five vector allocations per
-  group and the pool's mutex. Folding hides it -- 5% of a folded transfer,
-  60% of an unfolded one -- but it is the next thing to attack. The figure
-  comes from comparing two different harnesses, so it is an estimate.
-
-## GPU memory
-
-The plugin advertises `VRAM_SEG` only when the client it was built against
-actually exports `daos_obj_fetch_gpu()`, which lives in the unmerged
-`theodore/b_cufile` branch. meson checks for the symbol; `DAOS_PREFIX` in the
-environment picks which client to build against, because a host can carry both
-a stock client and the draft and choosing between them is a deployment
-decision rather than something to guess from a search order.
-
-```bash
-DAOS_PREFIX=/opt/daos-gds-gpu meson setup build-gpu ...
-#  -> "DAOS GPU-direct: available (VRAM_SEG enabled)"
-```
-
-Running it also needs the GDS transport stack: `D_MEM_DEVICE=1` and a
-CUDA-built libfabric ahead of the stock one on `LD_LIBRARY_PATH`. Without
-those Mercury refuses the bulk handle with `HG_OPNOTSUPPORTED` rather than
-falling back, so a GPU run either exercises the GPU path or fails outright --
-it cannot quietly measure a host bounce.
-
-Read [NIXL-DAOS-VRAM.md](https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-VRAM.md) before building anything on this. It works, and
-it is slower than not using it.
-
-## Threads
-
-Work runs on a fixed pool, sized by `NIXL_DAOS_THREADS` (default 64).
-
-64 is where the ladder flattens: unfolded, the backend reaches 8.3 GB/s at 16
-threads, 11.3 at 32, 14.4 at 64 and 14.3 at 128. Effective concurrency is
-`min(threads, requests in flight)`, so a caller that keeps fewer requests
-outstanding is capped by its own depth, not by this setting.
-
-## Bounding a dead engine (`NIXL_DAOS_EQ_TIMEOUT`)
-
-**On by default, 60 s.** The backend submits to a DAOS event queue and polls
-with that deadline. Set it to `0` to go back to a blocking call.
-
-It exists because a blocking DAOS call whose engine has died **does not return**
-([FAILURE-MODES.md](https://github.com/gluesys/lmcache-daos/blob/main/doc/FAILURE-MODES.md)). Through this plugin, with `daos_server` killed
-mid-read:
-
-| | outcome |
-|---|---|
-| blocking | still running at **120 s**, 65 threads stuck |
-| deadline 8 s | exited in **8 s**, every thread reclaimed |
-
-### What it costs: nothing measurable
-
-Measured on client-5 against cell1/cell2 -- 400G verbs, `ofi+verbs;ofi_rxm`,
-2 ranks x 8 targets -- which is the regime the event queue was originally
-rejected in. 120 objects x 40 layers, fold=1, four runs each:
-
-| | runs | mean |
+| environment variable | default | effect |
 |---|---|---|
-| blocking | 31.29 · 31.00 · 30.70 · 31.15 | **31.04 GB/s** |
-| event queue | 30.44 · 31.27 · 30.23 · 30.61 | **30.64 GB/s** |
+| `NIXL_DAOS_THREADS` | 64 | size of the worker pool (1..512). Throughput flattens at 64 on 400G verbs |
+| `NIXL_DAOS_EQ_TIMEOUT` | 60 | seconds a request may wait on a DAOS event queue before it fails; `0` blocks |
 
-The ranges overlap and the event queue won one run outright. Unfolded, where
-there are 4800 requests instead of 120, it is the same: 7.55 against 7.50.
+The event-queue deadline exists because a blocking DAOS call whose engine has
+died does not return. With `daos_server` killed mid-read, the blocking path was
+still stuck at 120 s with 65 threads; an 8 s deadline returned in 8 s with every
+thread reclaimed ([failure modes][fail]). It costs nothing measurable: 30.64
+against 31.04 GB/s over four runs, ranges overlapping.
 
-This retires what this file used to say -- that an event queue "caps around
-7-12 GB/s however the queues are arranged". That came from a sweep over the DFS
-async path through Python with 28 MiB reads; it does not transfer to folded
-object-API requests.
+### GPU memory
 
-### Why the queues are borrowed
+`VRAM_SEG` needs `daos_obj_fetch_gpu()`, which only a DAOS client built with
+GPU-direct support exports; meson checks for the symbol and advertises
+`VRAM_SEG` only when it is present. It works -- device-to-device round trips
+are bit-identical -- but is currently about 3.4x slower than staging through
+host memory, because the transport re-registers the GPU buffer on every
+transfer ([details][vram]).
 
-One EQ per thread was the first implementation and it was 35% SLOWER than
-blocking on cxl2, 2.08 against 3.12 GB/s. The thread pool is deliberately
-oversized: idle threads are free, but an idle event queue holds a network
-context, so 64 threads paid for 64 contexts to run 16 concurrent requests.
+## Example Usage
 
-| | 64 threads | 16 threads |
-|---|---|---|
-| blocking | 3.16 GB/s | 3.12 GB/s |
-| event queue, one per thread | 2.08 | 3.24 |
-| event queue, borrowed | **3.24** | **3.26** |
+```cpp
+#include "nixl.h"
 
-Borrowing for the duration of one request grows the set to the actual
-concurrency and no further, so thread count stops mattering. No two threads
-hold the same queue, so a poll cannot harvest another thread's completion.
+nixlAgent agent("app", nixlAgentConfig());
+nixlBackendH *daos = nullptr;
+agent.createBackend("DAOS", nixl_b_params_t(), daos);
 
-60 s is a backstop, not a latency target: a request measured 1.34 ms on verbs,
-so the default carries four orders of magnitude of headroom.
+nixl_opt_args_t ext;
+ext.backends.push_back(daos);
 
-## Building
+// One DAOS object in pool "p", container "c", named by devId 42. Its size is
+// not fixed at registration: transfers address it by offset.
+nixl_reg_dlist_t objs(FILE_SEG);
+nixlBlobDesc obj(0, 0, /*devId=*/42);
+obj.metaInfo = "p/c";
+objs.addDesc(obj);
+agent.registerMem(objs, &ext);
 
-```bash
-git clone https://github.com/ai-dynamo/nixl.git && cd nixl
-cp -r <this>/plugin src/plugins/daos          # then apply integration.patch
-pip install --user 'meson>=1.4' pybind11      # distro meson may be < 0.64
-meson setup build -Dcudapath_inc=/usr/local/cuda/include \
-                  -Dcudapath_lib=/usr/local/cuda/lib64
-ninja -C build
+std::vector<char> buf(1 << 20);
+nixl_reg_dlist_t dram(DRAM_SEG);
+dram.addDesc(nixlBlobDesc((uintptr_t)buf.data(), buf.size(), 0));
+agent.registerMem(dram, &ext);
+
+// Write the buffer to offset 0 of the object and wait for it.
+nixl_xfer_dlist_t local(DRAM_SEG), remote(FILE_SEG);
+local.addDesc(nixlBasicDesc((uintptr_t)buf.data(), buf.size(), 0));
+remote.addDesc(nixlBasicDesc(0, buf.size(), 42));
+
+nixlXferReqH *req = nullptr;
+agent.createXferReq(NIXL_WRITE, local, remote, "app", req, &ext);
+nixl_status_t st = agent.postXferReq(req);
+while (st == NIXL_IN_PROG)
+    st = agent.getXferStatus(req);
+agent.releaseXferReq(req);
 ```
 
-NIXL requires C++20 and meson >= 0.64. GCC 11.5 is enough. On an older UCX or
-libfabric the transport plugins fail to compile (`UCS_BIT_GET`,
-`fi_mr_attr::rocr`); add `-Ddisable_plugins=UCX,LIBFABRIC` when only the
-storage backends are wanted. UCX 1.21 builds them fine.
+`test/unit/plugins/daos/test_agent.cpp` is the complete, compiled version.
 
-The plugin finds DAOS itself. `find_library('daos')` answers only "is it
-somewhere the linker already looks" and returns no path, which produces a
-configure that succeeds and a link that fails with `cannot find -ldaos`. So
-`meson.build` searches `/var/daos-stockfull`, `/opt/daos-gds-gpu`, `/opt/daos`
-and `/usr/local` for a prefix that actually carries `daos.h`, and takes both
-the header and the library from it. A packaged DAOS under `/usr` and a source
-build under `/var` both work with no arguments.
+## Testing
 
-On a host without meson packaged (Rocky 10 has none), `python3 -m ensurepip`
-then `pip install meson ninja` works. `nvcc` must be on `PATH` or meson's CUDA
-probe fails.
-
-## Tests
-
-Both need a reachable pool and a container; neither needs a NIXL agent.
+The programs in `test/unit/plugins/daos/` need a reachable pool and container,
+so they are built and installed but not registered with `meson test`.
 
 ```bash
-./test_reg   <pool> <container>   # register/deregister, oid stability, refcount
-./test_xfer  <pool> <container>   # write/read round trip, integrity, miss detection
+nixl_daos_test_reg   <pool> <container>   # register/deregister, object id stability
+nixl_daos_test_xfer  <pool> <container>   # write/read round trip, integrity, miss detection
 NIXL_PLUGIN_DIR=<build>/src/plugins/daos \
-./test_agent <pool> <container>   # the same through a real nixlAgent
+nixl_daos_test_agent <pool> <container>   # the same through a real nixlAgent
 ```
-
-`test_agent` is the one that catches contract violations the other two cannot.
-A backend driven directly never has `loadLocalMD()` called, so omitting it --
-which the base class answers with an error, not a default -- passed every
-direct test and every benchmark while failing *every* `registerMem()` the agent
-made. It also confirms what the other tests only assume: `createXferReq()`
-hands the backend `nixlBasicDesc`, with no metadata pointer, so the agent must
-match a transfer descriptor back to a registered object by `devId` alone.
 
 `test_xfer` writes a self-describing payload -- every 8-byte word encodes its
-own (descriptor, offset) -- so a region that comes back wrong names where it
-actually came from. A plain pattern would hide cross-chunk corruption, which
-this project has already been bitten by once.
+own descriptor and offset -- so a region that comes back wrong names where it
+actually came from.
 
-## An upstream bug found on the way
+## Limitations
 
-`nixlBackendEngine`'s constructor dereferences `init_params->customParams`
-without a null check, while the field defaults to `nullptr`. The agent always
-fills it, so it never fires in normal use, but it segfaults any attempt to
-unit-test a backend directly. Worth reporting.
+- Local transfers only; no remote (agent-to-agent) path.
+- About 0.076 ms of per-request overhead in the NIXL path (`dynamic_cast`, a
+  `std::map` in `prepXfer()`, per-group vector allocations). Folding hides it
+  (5% of a folded transfer, 60% of an unfolded one).
+- The 64 MiB dkey span is fixed; it should become a plugin parameter once there
+  is a second workload to tune it against.
+
+[meas]: https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-MEASUREMENT.md
+[layer]: https://github.com/gluesys/lmcache-daos/blob/main/doc/LAYERWISE-MEASUREMENT.md
+[fail]: https://github.com/gluesys/lmcache-daos/blob/main/doc/FAILURE-MODES.md
+[vram]: https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-VRAM.md
