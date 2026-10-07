@@ -172,6 +172,12 @@ nixlDaosEngine::~nixlDaosEngine() {
      * given, so they have to be gone before anything below is closed. */
     pool_.reset();
 
+    /* Each event queue owns a network context; daos_fini() refuses to run while
+     * one is open (DER_BUSY, "cannot finalize, current ctx_num"), and the pool's
+     * own destructor would otherwise run after it, destroying queues in a library
+     * that has already been shut down. */
+    eqPool_.reset();
+
     {
         std::lock_guard<std::mutex> g(mtx_);
         for (auto &kv : conts_) {

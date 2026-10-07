@@ -22,7 +22,7 @@ A new storage backend plugin, `DAOS`, for the DAOS distributed object store.
 
 NIXL has no DAOS backend. DAOS is an open-source distributed object store used
 for HPC and AI storage; a NIXL backend lets Dynamo/KVBM and the LMCache NIXL
-backend use it directly. Design discussed in #<issue>.
+backend use it directly. Design discussed in #2361.
 
 ## How?
 
@@ -40,10 +40,14 @@ backend use it directly. Design discussed in #<issue>.
 
 ### Testing
 
-- Build: `meson setup build -Denable_plugins=DAOS,POSIX && ninja -C build` against
-  DAOS 2.8 (`daos-devel`), clang-format-19 clean.
-- Runtime (DAOS 2.8, 2 ranks, 400G verbs): `test_reg`, `test_xfer`, `test_agent`
-  pass; 34.17 GB/s reading 4.69 GiB.
+- Build: `meson setup build -Denable_plugins=DAOS,POSIX -Dbuild_tests=true && ninja -C build`
+  against DAOS 2.8 (`daos-devel` 2.8.0-6), `-Werror`; clang-format-19 clean.
+- Runtime, on this branch (NIXL main + this commit), DAOS 2.8.0-6 server, 1 rank,
+  `ofi+tcp`, client in a Kubernetes pod with `daos_agent` as a sidecar:
+  `nixl_daos_test_xfer` (10/10), `nixl_daos_test_reg` (11/11) and
+  `nixl_daos_test_agent` (11/11) pass.
+- Earlier throughput measurement (same backend code, NIXL e77af99, 2 ranks, 400G
+  verbs): 34.17 GB/s reading 4.69 GiB.
 
 ## Checklist
 
