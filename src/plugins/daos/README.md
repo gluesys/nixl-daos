@@ -188,7 +188,7 @@ actually came from.
 - The 64 MiB dkey span is fixed; it should become a plugin parameter once there
   is a second workload to tune it against.
 
-[meas]: https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-MEASUREMENT.md
-[layer]: https://github.com/gluesys/lmcache-daos/blob/main/doc/LAYERWISE-MEASUREMENT.md
-[fail]: https://github.com/gluesys/lmcache-daos/blob/main/doc/FAILURE-MODES.md
-[vram]: https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-VRAM.md
+[meas]: https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/NIXL-DAOS-MEASUREMENT.md
+[layer]: https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/LAYERWISE-MEASUREMENT.md
+[fail]: https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/FAILURE-MODES.md
+[vram]: https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/NIXL-DAOS-VRAM.md

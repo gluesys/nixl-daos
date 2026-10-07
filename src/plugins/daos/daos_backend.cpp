@@ -469,7 +469,8 @@ nixlDaosEngine::prepXfer(const nixl_xfer_op_t &operation,
 /*
  * Optional event-queue path, off by default.
  *
- * https://github.com/gluesys/lmcache-daos/blob/main/doc/FAILURE-MODES.md measured why it is wanted:
+ * https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/FAILURE-MODES.md
+ * measured why it is wanted:
  * when the engine is killed mid-write, a blocking daos_obj_update() never returns -- 16 of 16
  * threads still inside the call at 150 s -- while the same work submitted to an event queue and
  * polled with a timeout released every thread at 5.01 s, and the
@@ -655,10 +656,10 @@ nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
                  *
                  * So the nullptr below is a choice, not a constraint, and it
                  * is currently the wrong one:
-                 * https://github.com/gluesys/lmcache-daos/blob/main/doc/FAILURE-MODES.md measured
-                 * the event queue as the only bounded way out of a dead engine (16/16 threads lost
-                 * blocking, 0/16 with a poll timeout). The VRAM_SEG path can have that escape; it
-                 * just does not yet. */
+                 * https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/FAILURE-MODES.md
+                 * measured the event queue as the only bounded way out of a dead engine
+                 * (16/16 threads lost blocking, 0/16 with a poll timeout). The VRAM_SEG path can
+                 * have that escape; it just does not yet. */
                 rc = req->op == NIXL_READ ? daos_obj_fetch_gpu(gp->oh,
                                                                DAOS_TX_NONE,
                                                                0,

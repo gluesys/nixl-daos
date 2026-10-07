@@ -18,7 +18,7 @@ NIXL has no DAOS backend today. A native backend lets Dynamo/KVBM and the LMCach
 
 **Performance:**
 
-- **34.17 GB/s** reading 4.69 GiB (120 objects x 40 layers x 1 MiB) from 2 DAOS 2.8 ranks over 400G verbs (`ofi+verbs;ofi_rxm`)
+- **34.17 GB/s** reading 4.69 GiB (120 objects x 40 layers x 1 MiB) from 2 DAOS ranks (2.9.100 development build) over 400G verbs (`ofi+verbs;ofi_rxm`)
 - Object API instead of the DFS file layer: on the same 4800 reads of 1 MiB, DFS costs 0.63 ms fixed per object and the object API 0.0137 ms. At 1 MiB, DFS spends about 90% of its time on overhead
 - A whole descriptor list becomes one `daos_obj_fetch()`/`daos_obj_update()` through the DAOS iod array
 

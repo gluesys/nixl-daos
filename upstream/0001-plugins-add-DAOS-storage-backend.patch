@@ -1,4 +1,4 @@
-From c19ca6536bc83937a06aeaf203fe19a969cec666 Mon Sep 17 00:00:00 2001
+From d2fb78dce7f8d680ab5d8373c966bb9b852ba6a5 Mon Sep 17 00:00:00 2001
 From: Kyeongpyo Kim <hgichon@gmail.com>
 Date: Wed, 7 Oct 2026 22:53:41 +0900
 Subject: [PATCH] plugins: add DAOS storage backend
@@ -31,7 +31,7 @@ Signed-off-by: Kyeongpyo Kim <hgichon@gmail.com>
  meson.build                           |   2 +-
  meson_options.txt                     |   2 +
  src/plugins/daos/README.md            | 194 +++++++
- src/plugins/daos/daos_backend.cpp     | 786 ++++++++++++++++++++++++++
+ src/plugins/daos/daos_backend.cpp     | 787 ++++++++++++++++++++++++++
  src/plugins/daos/daos_backend.h       | 344 +++++++++++
  src/plugins/daos/daos_plugin.cpp      |  43 ++
  src/plugins/daos/meson.build          |  89 +++
@@ -41,7 +41,7 @@ Signed-off-by: Kyeongpyo Kim <hgichon@gmail.com>
  test/unit/plugins/daos/test_reg.cpp   | 107 ++++
  test/unit/plugins/daos/test_xfer.cpp  | 182 ++++++
  test/unit/plugins/meson.build         |   4 +
- 13 files changed, 1974 insertions(+), 1 deletion(-)
+ 13 files changed, 1975 insertions(+), 1 deletion(-)
  create mode 100644 src/plugins/daos/README.md
  create mode 100644 src/plugins/daos/daos_backend.cpp
  create mode 100644 src/plugins/daos/daos_backend.h
@@ -80,7 +80,7 @@ index 791a532..686a723 100644
  option('cudapath_inc', type: 'string', value: '', description: 'Include path for CUDA')
 diff --git a/src/plugins/daos/README.md b/src/plugins/daos/README.md
 new file mode 100644
-index 0000000..cc616fc
+index 0000000..afe2e28
 --- /dev/null
 +++ b/src/plugins/daos/README.md
 @@ -0,0 +1,194 @@
@@ -274,16 +274,16 @@ index 0000000..cc616fc
 +- The 64 MiB dkey span is fixed; it should become a plugin parameter once there
 +  is a second workload to tune it against.
 +
-+[meas]: https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-MEASUREMENT.md
-+[layer]: https://github.com/gluesys/lmcache-daos/blob/main/doc/LAYERWISE-MEASUREMENT.md
-+[fail]: https://github.com/gluesys/lmcache-daos/blob/main/doc/FAILURE-MODES.md
-+[vram]: https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-VRAM.md
++[meas]: https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/NIXL-DAOS-MEASUREMENT.md
++[layer]: https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/LAYERWISE-MEASUREMENT.md
++[fail]: https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/FAILURE-MODES.md
++[vram]: https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/NIXL-DAOS-VRAM.md
 diff --git a/src/plugins/daos/daos_backend.cpp b/src/plugins/daos/daos_backend.cpp
 new file mode 100644
-index 0000000..3c22944
+index 0000000..808e6ea
 --- /dev/null
 +++ b/src/plugins/daos/daos_backend.cpp
-@@ -0,0 +1,786 @@
+@@ -0,0 +1,787 @@
 +/*
 + * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
 + * SPDX-License-Identifier: Apache-2.0
@@ -755,7 +755,8 @@ index 0000000..3c22944
 +/*
 + * Optional event-queue path, off by default.
 + *
-+ * https://github.com/gluesys/lmcache-daos/blob/main/doc/FAILURE-MODES.md measured why it is wanted:
++ * https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/FAILURE-MODES.md
++ * measured why it is wanted:
 + * when the engine is killed mid-write, a blocking daos_obj_update() never returns -- 16 of 16
 + * threads still inside the call at 150 s -- while the same work submitted to an event queue and
 + * polled with a timeout released every thread at 5.01 s, and the
@@ -941,10 +942,10 @@ index 0000000..3c22944
 +                 *
 +                 * So the nullptr below is a choice, not a constraint, and it
 +                 * is currently the wrong one:
-+                 * https://github.com/gluesys/lmcache-daos/blob/main/doc/FAILURE-MODES.md measured
-+                 * the event queue as the only bounded way out of a dead engine (16/16 threads lost
-+                 * blocking, 0/16 with a poll timeout). The VRAM_SEG path can have that escape; it
-+                 * just does not yet. */
++                 * https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/FAILURE-MODES.md
++                 * measured the event queue as the only bounded way out of a dead engine
++                 * (16/16 threads lost blocking, 0/16 with a poll timeout). The VRAM_SEG path can
++                 * have that escape; it just does not yet. */
 +                rc = req->op == NIXL_READ ? daos_obj_fetch_gpu(gp->oh,
 +                                                               DAOS_TX_NONE,
 +                                                               0,
@@ -1072,7 +1073,7 @@ index 0000000..3c22944
 +}
 diff --git a/src/plugins/daos/daos_backend.h b/src/plugins/daos/daos_backend.h
 new file mode 100644
-index 0000000..808188b
+index 0000000..2c20cec
 --- /dev/null
 +++ b/src/plugins/daos/daos_backend.h
 @@ -0,0 +1,344 @@
@@ -1096,11 +1097,11 @@ index 0000000..808188b
 + * NIXL backend for DAOS.
 + *
 + * Storage model: the raw object API, not DFS. Measured on the testbed
-+ * (https://github.com/gluesys/lmcache-daos/blob/main/doc/LAYERWISE-MEASUREMENT.md), the per-object
-+ * cost is DFS         0.63   ms + 0.067  ms/MiB object API  0.0137 ms + 0.0385 ms/MiB so DFS spends
-+ * ~90% of a 1 MiB read on overhead dkey/akey does not pay. The object API also folds a whole
-+ * descriptor list into one daos_obj_fetch() via its iod array -- exactly the shape prepXfer() hands
-+ * us, and something a file-per-object model cannot express.
++ * (https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/LAYERWISE-MEASUREMENT.md),
++ * the per-object cost is 0.63 ms + 0.067 ms/MiB for DFS and 0.0137 ms + 0.0385 ms/MiB for the
++ * object API, so DFS spends ~90% of a 1 MiB read on overhead dkey/akey does not pay. The object API
++ * also folds a whole descriptor list into one daos_obj_fetch() via its iod array -- exactly the
++ * shape prepXfer() hands us, and something a file-per-object model cannot express.
 + *
 + * Descriptor mapping. nixlBasicDesc carries only addr/len/devId, and
 + * nixlBlobDesc adds metaInfo:
@@ -1400,7 +1401,7 @@ index 0000000..808188b
 +     * treats a transfer as not mutating the engine, which is true of every
 +     * field except this one. Sized from NIXL_DAOS_THREADS, default 64, which
 +     * is where throughput stops improving on the testbed -- see
-+     * https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-MEASUREMENT.md. */
++     * https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/NIXL-DAOS-MEASUREMENT.md. */
 +    mutable std::unique_ptr<nixlDaosThreadPool> pool_;
 +
 +    /* Event queues, borrowed per request. Only used when NIXL_DAOS_EQ_TIMEOUT

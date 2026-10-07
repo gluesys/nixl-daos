@@ -3,4 +3,7 @@
 
 # ADR
 
-이 저장소의 아키텍처 결정은 `exastor/daos-operator` 의 `doc/adr/` 에 모아 둔다(ADR-001 배포 모델, ADR-002 디바이스·네트워크, ADR-003 업그레이드). 이 저장소 고유 결정만 여기에 추가한다.
+Architecture decisions shared by the Gluesys DAOS repositories are kept in
+`doc/adr/` of [daos-operator](https://github.com/gluesys/daos-operator) (ADR-001
+deployment model, ADR-002 devices and network, ADR-003 upgrades). Only decisions
+specific to this repository are added here.

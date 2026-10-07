@@ -3,32 +3,71 @@
 
 # nixl-daos
 
-NIXL(ai-dynamo/nixl) 용 **DAOS 백엔드 플러그인**과 그 컨테이너 빌드·CI·테스트베드 e2e.
+A [DAOS](https://github.com/daos-stack/daos) storage backend for
+[NIXL](https://github.com/ai-dynamo/nixl), the NVIDIA Inference Xfer Library. It
+moves data between local memory and DAOS objects through the DAOS object API
+(dkey/akey), not the DFS file layer, and is meant for KV cache offload from
+Dynamo/KVBM and the LMCache NIXL backend.
 
-- **플러그인:** `src/plugins/daos/`(백엔드, 빌드 파일, 사용 설명 `README.md`)
-- **테스트:** `test/unit/plugins/daos/`(실제 DAOS 풀이 필요한 프로그램: `test_reg`, `test_xfer`, `test_agent`, `test_gpu`, `bench_nixl`)
-- **상류 통합:** `upstream/apply-integration.sh` 가 NIXL 소스 트리에 플러그인을 넣고 meson 에 연결한다(`upstream/integration.patch`).
+> **Out of tree, on its way upstream.** NIXL has no DAOS backend today. The design
+> is proposed in [ai-dynamo/nixl#2361](https://github.com/ai-dynamo/nixl/issues/2361);
+> the PR follows once it is agreed. This repository holds the plugin until then,
+> plus its container build and testbed scripts.
 
-플러그인은 2026-10-08 `exastor/lmcache-daos` 의 `nixl/` 에서 이 저장소로 옮겨 왔다(이전 이력은 그 저장소에 있다).
-그 전에 이 저장소에 있던 스켈레톤(OBJ_SEG, ADR-nixl-001)은 대체됐다.
-2026-09 기준 상류 NIXL 플러그인 목록(ucx, cuda_gds, gds_mt, posix, obj, hf3fs, infinia, mooncake, libfabric, gpunetio,
-gusli, azure_blob, uccl)에 DAOS 는 없다.
+## What has been measured
 
-이 저장소가 지키는 규칙(모든 exastor K8s 저장소 공통):
-1. **CRD 가 유일한 관리 API.** 어플라이언스 REST/UI 와 코드를 공유하지 않는다.
-2. **두 번째 SSoT 를 만들지 않는다.** 원하는 상태 = CR spec, 실제 상태 = DAOS MS DB·메트릭. operator 는 비교만 한다.
-3. **파괴적 작업 자동화 금지.** `storage format`/wipe/재포맷은 사람 승인(어노테이션) 없이 실행하지 않는다.
-4. **upstream-first.** 패치는 먼저 daos-stack / ai-dynamo/nixl / LMCache 로 보낸다.
+- **34.17 GB/s** reading 4.69 GiB (120 objects x 40 layers x 1 MiB) from 2 DAOS ranks
+  (2.9.100 development build) over 400G verbs. Without folding the 40 layers into one RPC: 14.40 GB/s.
+- DFS costs 0.63 ms fixed per object, the object API 0.0137 ms, on the same 4800
+  reads of 1 MiB.
+- With `daos_server` killed mid-read, the event-queue deadline returns in 8 s with
+  every thread reclaimed; a blocking call was still stuck at 120 s.
+- On NIXL main, against an upstream DAOS 2.8.0-6 server (1 rank, `ofi+tcp`), the
+  `reg`, `xfer` and `agent` tests pass.
 
-## 설계와 상태
+The design and the descriptor mapping are in
+[`src/plugins/daos/README.md`](src/plugins/daos/README.md). The full reports, with
+method, raw numbers and the conclusions later retracted, are in
+[`doc/measurements/`](doc/measurements/):
+[throughput](doc/measurements/NIXL-DAOS-MEASUREMENT.md),
+[DFS vs object API, folding](doc/measurements/LAYERWISE-MEASUREMENT.md),
+[failure modes](doc/measurements/FAILURE-MODES.md) and
+[GPU memory](doc/measurements/NIXL-DAOS-VRAM.md).
 
-설계(디스크립터 매핑, DFS 대신 객체 API 를 쓰는 이유, EQ 데드라인, VRAM_SEG 게이팅)와 실측(400G verbs 에서 읽기
-34.17 GB/s)은 `src/plugins/daos/README.md` 에 있다. 측정 상세는 `exastor/lmcache-daos` 의 `doc/NIXL-DAOS-MEASUREMENT.md`,
-`doc/LAYERWISE-MEASUREMENT.md`.
+## Layout
 
-- 빌드: `ci/build.sh` 가 daos-client 이미지 안에서 상류 NIXL + 이 플러그인을 meson 으로 빌드하고, `/opt/nixl` 설치 트리로
-  런타임 이미지 `nixl-daos:dev` 를 만든다(`images/Dockerfile.runtime`). `build_tests=true` 와 debugoptimized 빌드에서
-  `nixl_daos_test_{reg,xfer,agent}` 가 함께 설치된다.
-- e2e: `ci/e2e-testbed.sh` 가 테스트베드 클라이언트에서 세 테스트를 실제 DAOS 풀에 대어 본다.
-- 컨테이너에서 호스트 `daos_agent` 소켓에 붙으려면 `--security-opt label=disable`(SELinux) 이 필요하다.
-- 상류 제출 준비는 `upstream/` 을 본다.
+| path | contents |
+|---|---|
+| `src/plugins/daos/` | the plugin: `nixlDaosEngine`, meson build, user documentation |
+| `test/unit/plugins/daos/` | programs that need a live DAOS pool: `test_reg`, `test_xfer`, `test_agent`, plus `test_gpu` and `bench_nixl` (not part of the upstream submission) |
+| `upstream/` | the upstream submission: `integration.patch` and `apply-integration.sh` wire the plugin into a NIXL source tree; `0001-*.patch` is the commit as it will be submitted; issue and PR drafts |
+| `ci/build.sh` | builds NIXL + the plugin inside a DAOS client image and produces the runtime image `nixl-daos:dev` (`images/Dockerfile.runtime`) |
+| `ci/e2e-testbed.sh` | runs the tests from that image against an existing DAOS pool on a client host |
+| `doc/measurements/` | measurement reports behind the numbers above |
+| `doc/adr/` | design decisions specific to this repository |
+
+## Build and test
+
+```bash
+# NIXL source checkout next to this repository; DAOS client image with daos-devel
+ci/build.sh ../nixl registry.example/daos-client:2.8.0 4
+
+# against a live pool, from a host running daos_agent
+ci/e2e-testbed.sh root@client-host <pool> <daos-system-name> nixl-daos:dev
+```
+
+Inside a container, reaching the host `daos_agent` socket needs
+`--security-opt label=disable` on SELinux hosts.
+
+## Conventions
+
+Shared with the other Gluesys DAOS repositories
+([daos-operator](https://github.com/gluesys/daos-operator),
+[daos-csi](https://github.com/gluesys/daos-csi),
+[daos-images](https://github.com/gluesys/daos-images)):
+fixes go upstream first (daos-stack, ai-dynamo/nixl, LMCache), and destructive DAOS
+operations (format, wipe) are never automated.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
