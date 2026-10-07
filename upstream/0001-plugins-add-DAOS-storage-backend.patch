@@ -1,0 +1,2124 @@
+From 1ad490a22f8848833840840a192e4d3f380358ad Mon Sep 17 00:00:00 2001
+From: Kyeongpyo Kim <hgichon@gmail.com>
+Date: Wed, 7 Oct 2026 22:53:41 +0900
+Subject: [PATCH] plugins: add DAOS storage backend
+
+Add a NIXL backend for DAOS, the open-source distributed asynchronous
+object store. It moves data between local memory (DRAM_SEG) and DAOS
+objects (FILE_SEG) with the DAOS object API rather than the DFS file
+layer: one descriptor list becomes one daos_obj_fetch()/daos_obj_update()
+through the iod array, and the object API costs 0.0137 ms fixed per
+object against 0.63 ms for DFS.
+
+- metaInfo names the pool and container, devId the object (the object id
+  is derived from it, so it is stable across restarts), addr the offset;
+  offsets map to dkey = addr / 64 MiB, akey = addr % 64 MiB.
+- Work runs on a fixed pool (NIXL_DAOS_THREADS); each request borrows a
+  DAOS event queue and polls it with a deadline (NIXL_DAOS_EQ_TIMEOUT) so
+  a dead engine cannot hang a request.
+- VRAM_SEG is advertised only when the DAOS client exports
+  daos_obj_fetch_gpu().
+- Build follows INFINIA: -Ddisable_daos_backend, -Ddaos_path; skipped with
+  a warning when the DAOS client is absent, an error when requested.
+- Tests in test/unit/plugins/daos need a live pool and are built but not
+  registered with meson test.
+
+Measured with DAOS 2.8, 2 ranks, 400G verbs: 34.17 GB/s reading 4.69 GiB.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: Kyeongpyo Kim <hgichon@gmail.com>
+---
+ meson.build                           |   2 +-
+ meson_options.txt                     |   2 +
+ src/plugins/daos/README.md            | 194 +++++++
+ src/plugins/daos/daos_backend.cpp     | 780 ++++++++++++++++++++++++++
+ src/plugins/daos/daos_backend.h       | 344 ++++++++++++
+ src/plugins/daos/daos_plugin.cpp      |  43 ++
+ src/plugins/daos/meson.build          |  89 +++
+ src/plugins/meson.build               |   5 +
+ test/unit/plugins/daos/meson.build    |  31 +
+ test/unit/plugins/daos/test_agent.cpp | 186 ++++++
+ test/unit/plugins/daos/test_reg.cpp   | 107 ++++
+ test/unit/plugins/daos/test_xfer.cpp  | 182 ++++++
+ test/unit/plugins/meson.build         |   4 +
+ 13 files changed, 1968 insertions(+), 1 deletion(-)
+ create mode 100644 src/plugins/daos/README.md
+ create mode 100644 src/plugins/daos/daos_backend.cpp
+ create mode 100644 src/plugins/daos/daos_backend.h
+ create mode 100644 src/plugins/daos/daos_plugin.cpp
+ create mode 100644 src/plugins/daos/meson.build
+ create mode 100644 test/unit/plugins/daos/meson.build
+ create mode 100644 test/unit/plugins/daos/test_agent.cpp
+ create mode 100644 test/unit/plugins/daos/test_reg.cpp
+ create mode 100644 test/unit/plugins/daos/test_xfer.cpp
+
+diff --git a/meson.build b/meson.build
+index ad264ca..c4b37f4 100644
+--- a/meson.build
++++ b/meson.build
+@@ -29,7 +29,7 @@ if enable_plugins_opt != '' and disable_plugins_opt != ''
+     error('Cannot specify both enable_plugins and disable_plugins options')
+ endif
+ 
+-all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'REDIS', 'GDS', 'GDS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB', 'INFINIA', 'TELEMETRY_DOCA']
++all_plugins = ['UCX', 'LIBFABRIC', 'POSIX', 'OBJ', 'REDIS', 'GDS', 'GDS_MT', 'MOONCAKE', 'HF3FS', 'GUSLI', 'GPUNETIO', 'UCCL', 'AZURE_BLOB', 'INFINIA', 'DAOS', 'TELEMETRY_DOCA']
+ 
+ enabled_plugins = {}
+ 
+diff --git a/meson_options.txt b/meson_options.txt
+index 791a532..686a723 100644
+--- a/meson_options.txt
++++ b/meson_options.txt
+@@ -21,6 +21,8 @@ option('disable_gds_backend', type : 'boolean', value : false, description : 'di
+ option('disable_mooncake_backend', type : 'boolean', value : false, description : 'disable mooncake backend')
+ option('disable_infinia_backend', type : 'boolean', value : false, description : 'disable infinia backend')
+ option('infinia_path', type: 'string', value: '/opt/ddn/red/', description: 'Path to Infinia client install')
++option('disable_daos_backend', type : 'boolean', value : false, description : 'disable DAOS backend')
++option('daos_path', type: 'string', value: '', description: 'Path to a DAOS client install (include/ and lib64/); empty searches the default paths')
+ option('install_headers', type : 'boolean', value : true, description : 'install headers')
+ option('gds_path', type: 'string', value: '/usr/local/cuda/', description: 'Path to GDS CuFile install')
+ option('cudapath_inc', type: 'string', value: '', description: 'Include path for CUDA')
+diff --git a/src/plugins/daos/README.md b/src/plugins/daos/README.md
+new file mode 100644
+index 0000000..cc616fc
+--- /dev/null
++++ b/src/plugins/daos/README.md
+@@ -0,0 +1,194 @@
++<!--
++SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
++SPDX-License-Identifier: Apache-2.0
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++-->
++
++# NIXL DAOS Plugin
++
++## Overview
++
++A storage backend for [DAOS](https://github.com/daos-stack/daos), the
++distributed asynchronous object store. It moves data between local memory and
++DAOS objects with the DAOS **object API** (dkey/akey), not the DFS file layer.
++
++- **Segments:** `DRAM_SEG` (local) and `FILE_SEG` (DAOS objects). `VRAM_SEG` is
++  advertised only when the DAOS client exports GPU-direct entry points (see
++  [GPU memory](#gpu-memory)).
++- **Local transfers only:** `supportsLocal()` is true, `supportsRemote()` false.
++- **Throughput:** 34.17 GB/s reading 4.69 GiB (120 objects x 40 layers x 1 MiB)
++  from 2 DAOS ranks over 400G verbs ([measurement][meas]).
++
++### Why the object API and not DFS
++
++The same 4800 reads of 1 MiB, measured both ways ([measurement][layer]):
++
++| path | fixed cost per object | marginal |
++|---|---|---|
++| DFS (`dfs_sys_read`, flat namespace) | 0.63 ms | 0.067 ms/MiB |
++| object API (dkey/akey) | **0.0137 ms** | 0.0385 ms/MiB |
++
++At 1 MiB objects DFS spends about 90% of the time on overhead the object API
++does not pay. The object API also folds a whole descriptor list into one
++`daos_obj_fetch()` through its iod array, which is the shape `prepXfer()` hands
++the backend.
++
++## Dependencies
++
++- A DAOS client: headers (`daos.h`) and `libdaos`, from the `daos-devel`
++  package or a source build. Tested with DAOS 2.8.
++- A running `daos_agent` on the host, and a DAOS pool and container the process
++  may access.
++
++## Build Instructions
++
++The plugin is built when meson finds the DAOS client and skipped with a warning
++when it does not.
++
++```bash
++# DAOS client in the default search path (e.g. the daos-devel package)
++meson setup build
++ninja -C build
++
++# DAOS client under a prefix
++meson setup build -Ddaos_path=/opt/daos
++
++# Fail instead of skipping when DAOS is missing
++meson setup build -Denable_plugins=DAOS
++
++# Never build it
++meson setup build -Ddisable_daos_backend=true
++```
++
++The plugin library is `libplugin_DAOS.so` under the NIXL plugin directory.
++
++## API Reference
++
++`nixlDaosEngine` (`daos_backend.h`) implements `nixlBackendEngine`.
++
++### Descriptor mapping
++
++| field | meaning |
++|---|---|
++| `metaInfo` | `"pool/container"`, or `"pool/container/<hi>.<lo>"` for an explicit object id |
++| `devId` | the caller's key for the object; the object id is derived from it when `metaInfo` has two fields |
++| `addr` | offset within the object |
++| `len` | bytes |
++
++The object id is derived from `devId` so that the same key names the same
++object across process restarts; otherwise a cache could not find what it
++stored.
++
++Inside an object, an offset maps to
++
++```
++dkey = addr / 64 MiB      akey = addr % 64 MiB
++```
++
++Descriptors within one 64 MiB span share a dkey, land on one target and fold
++into a single RPC; separate spans spread across targets. On the same 4.69 GiB,
++40 akeys under one dkey took 204 ms, one akey per RPC 245 ms, and a single
++40 MiB akey extent 571 ms.
++
++### Configuration
++
++| environment variable | default | effect |
++|---|---|---|
++| `NIXL_DAOS_THREADS` | 64 | size of the worker pool (1..512). Throughput flattens at 64 on 400G verbs |
++| `NIXL_DAOS_EQ_TIMEOUT` | 60 | seconds a request may wait on a DAOS event queue before it fails; `0` blocks |
++
++The event-queue deadline exists because a blocking DAOS call whose engine has
++died does not return. With `daos_server` killed mid-read, the blocking path was
++still stuck at 120 s with 65 threads; an 8 s deadline returned in 8 s with every
++thread reclaimed ([failure modes][fail]). It costs nothing measurable: 30.64
++against 31.04 GB/s over four runs, ranges overlapping.
++
++### GPU memory
++
++`VRAM_SEG` needs `daos_obj_fetch_gpu()`, which only a DAOS client built with
++GPU-direct support exports; meson checks for the symbol and advertises
++`VRAM_SEG` only when it is present. It works -- device-to-device round trips
++are bit-identical -- but is currently about 3.4x slower than staging through
++host memory, because the transport re-registers the GPU buffer on every
++transfer ([details][vram]).
++
++## Example Usage
++
++```cpp
++#include "nixl.h"
++
++nixlAgent agent("app", nixlAgentConfig());
++nixlBackendH *daos = nullptr;
++agent.createBackend("DAOS", nixl_b_params_t(), daos);
++
++nixl_opt_args_t ext;
++ext.backends.push_back(daos);
++
++// One DAOS object in pool "p", container "c", named by devId 42. Its size is
++// not fixed at registration: transfers address it by offset.
++nixl_reg_dlist_t objs(FILE_SEG);
++nixlBlobDesc obj(0, 0, /*devId=*/42);
++obj.metaInfo = "p/c";
++objs.addDesc(obj);
++agent.registerMem(objs, &ext);
++
++std::vector<char> buf(1 << 20);
++nixl_reg_dlist_t dram(DRAM_SEG);
++dram.addDesc(nixlBlobDesc((uintptr_t)buf.data(), buf.size(), 0));
++agent.registerMem(dram, &ext);
++
++// Write the buffer to offset 0 of the object and wait for it.
++nixl_xfer_dlist_t local(DRAM_SEG), remote(FILE_SEG);
++local.addDesc(nixlBasicDesc((uintptr_t)buf.data(), buf.size(), 0));
++remote.addDesc(nixlBasicDesc(0, buf.size(), 42));
++
++nixlXferReqH *req = nullptr;
++agent.createXferReq(NIXL_WRITE, local, remote, "app", req, &ext);
++nixl_status_t st = agent.postXferReq(req);
++while (st == NIXL_IN_PROG)
++    st = agent.getXferStatus(req);
++agent.releaseXferReq(req);
++```
++
++`test/unit/plugins/daos/test_agent.cpp` is the complete, compiled version.
++
++## Testing
++
++The programs in `test/unit/plugins/daos/` need a reachable pool and container,
++so they are built and installed but not registered with `meson test`.
++
++```bash
++nixl_daos_test_reg   <pool> <container>   # register/deregister, object id stability
++nixl_daos_test_xfer  <pool> <container>   # write/read round trip, integrity, miss detection
++NIXL_PLUGIN_DIR=<build>/src/plugins/daos \
++nixl_daos_test_agent <pool> <container>   # the same through a real nixlAgent
++```
++
++`test_xfer` writes a self-describing payload -- every 8-byte word encodes its
++own descriptor and offset -- so a region that comes back wrong names where it
++actually came from.
++
++## Limitations
++
++- Local transfers only; no remote (agent-to-agent) path.
++- About 0.076 ms of per-request overhead in the NIXL path (`dynamic_cast`, a
++  `std::map` in `prepXfer()`, per-group vector allocations). Folding hides it
++  (5% of a folded transfer, 60% of an unfolded one).
++- The 64 MiB dkey span is fixed; it should become a plugin parameter once there
++  is a second workload to tune it against.
++
++[meas]: https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-MEASUREMENT.md
++[layer]: https://github.com/gluesys/lmcache-daos/blob/main/doc/LAYERWISE-MEASUREMENT.md
++[fail]: https://github.com/gluesys/lmcache-daos/blob/main/doc/FAILURE-MODES.md
++[vram]: https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-VRAM.md
+diff --git a/src/plugins/daos/daos_backend.cpp b/src/plugins/daos/daos_backend.cpp
+new file mode 100644
+index 0000000..62de425
+--- /dev/null
++++ b/src/plugins/daos/daos_backend.cpp
+@@ -0,0 +1,780 @@
++/*
++ * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#include "daos_backend.h"
++
++#include <cstdlib>
++#include <memory>
++#include <mutex>
++#include <sstream>
++#include <vector>
++
++#include "common/nixl_log.h"
++
++namespace {
++
++/*
++ * metaInfo grammar, kept deliberately small:
++ *
++ *   "pool/container"                 open (or reuse) the container, then
++ *                                    generate an object id from devId
++ *   "pool/container/<hi>.<lo>"       use that exact object id
++ *
++ * The two-field form is what a cache uses: the caller already has a unique
++ * devId per object, so deriving the oid from it keeps the caller from having
++ * to invent and remember object ids. The three-field form exists so an
++ * existing object can be addressed, which is what any test that writes with
++ * one tool and reads with another needs.
++ */
++struct daosTarget {
++    std::string pool;
++    std::string cont;
++    bool haveOid = false;
++    daos_obj_id_t oid{};
++};
++
++bool
++parseTarget(const std::string &meta, daosTarget &out) {
++    std::vector<std::string> parts;
++    std::stringstream ss(meta);
++    std::string tok;
++
++    while (std::getline(ss, tok, '/')) {
++        if (!tok.empty()) {
++            parts.push_back(tok);
++        }
++    }
++
++    if (parts.size() < 2 || parts.size() > 3) {
++        return false;
++    }
++
++    out.pool = parts[0];
++    out.cont = parts[1];
++
++    if (parts.size() == 3) {
++        const auto dot = parts[2].find('.');
++        if (dot == std::string::npos) {
++            return false;
++        }
++        try {
++            out.oid.hi = std::stoull(parts[2].substr(0, dot));
++            out.oid.lo = std::stoull(parts[2].substr(dot + 1));
++        }
++        catch (const std::exception &) {
++            return false;
++        }
++        out.haveOid = true;
++    }
++    return true;
++}
++
++} // namespace
++
++nixlDaosThreadPool::nixlDaosThreadPool(unsigned n) {
++    workers_.reserve(n);
++    for (unsigned i = 0; i < n; i++) {
++        workers_.emplace_back([this] {
++            for (;;) {
++                std::function<void()> job;
++                {
++                    std::unique_lock<std::mutex> g(m_);
++                    cv_.wait(g, [this] { return stop_ || !q_.empty(); });
++                    if (stop_ && q_.empty()) {
++                        return;
++                    }
++                    job = std::move(q_.front());
++                    q_.pop();
++                }
++                job();
++            }
++        });
++    }
++}
++
++nixlDaosThreadPool::~nixlDaosThreadPool() {
++    {
++        std::lock_guard<std::mutex> g(m_);
++        stop_ = true;
++    }
++    cv_.notify_all();
++    for (auto &t : workers_) {
++        if (t.joinable()) {
++            t.join();
++        }
++    }
++}
++
++void
++nixlDaosThreadPool::submit(std::function<void()> job) {
++    {
++        std::lock_guard<std::mutex> g(m_);
++        q_.push(std::move(job));
++    }
++    cv_.notify_one();
++}
++
++nixl_b_params_t
++nixlDaosEngine::getPluginParams() {
++    /* Nothing yet. "pool" and "container" will land here so a deployment can
++     * set a default instead of repeating it in every metaInfo. */
++    return nixl_b_params_t();
++}
++
++nixlDaosEngine::nixlDaosEngine(const nixlBackendInitParams *init_params)
++    : nixlBackendEngine(init_params) {
++    eqPool_ = std::make_unique<nixlDaosEqPool>();
++    const int rc = daos_init();
++
++    /* -DER_ALREADY: another component in this process already called it. That
++     * is normal when the application also links the DAOS client, so it counts
++     * as success for us -- but we must then not call daos_fini() on the way
++     * out, or we pull the library out from under them. */
++    if (rc == 0) {
++        daosInited_ = true;
++    } else if (rc != -DER_ALREADY) {
++        NIXL_ERROR << "daos_init() failed: " << rc;
++    }
++
++    /* 64 is where the concurrency ladder flattens on the testbed: at 400G
++     * verbs the unfolded arm reaches 8.3 GB/s at 16 threads, 11.3 at 32,
++     * 14.4 at 64, and 14.3 at 128. Effective concurrency is min(threads,
++     * requests in flight), so a caller that keeps fewer requests outstanding
++     * is capped by its own depth rather than by this number. */
++    unsigned nthreads = 64;
++    if (const char *env = std::getenv("NIXL_DAOS_THREADS")) {
++        const int v = std::atoi(env);
++        if (v > 0 && v <= 512) {
++            nthreads = static_cast<unsigned>(v);
++        } else {
++            NIXL_WARN << "NIXL_DAOS_THREADS=" << env << " ignored (expected 1..512)";
++        }
++    }
++    pool_ = std::make_unique<nixlDaosThreadPool>(nthreads);
++    NIXL_DEBUG << "DAOS backend: " << nthreads << " IO threads";
++}
++
++nixlDaosEngine::~nixlDaosEngine() {
++    /* Workers touch container handles through the object handles they were
++     * given, so they have to be gone before anything below is closed. */
++    pool_.reset();
++
++    {
++        std::lock_guard<std::mutex> g(mtx_);
++        for (auto &kv : conts_) {
++            if (kv.second.refs > 0) {
++                NIXL_WARN << "DAOS container " << kv.first << " still had " << kv.second.refs
++                          << " registration(s) at shutdown";
++            }
++            daos_cont_close(kv.second.coh, nullptr);
++            daos_pool_disconnect(kv.second.poh, nullptr);
++        }
++        conts_.clear();
++    }
++    if (daosInited_) {
++        daos_fini();
++    }
++}
++
++nixl_status_t
++nixlDaosEngine::getCont(const std::string &pool, const std::string &cont, contHandles *&out) {
++    const std::string key = pool + "/" + cont;
++    auto it = conts_.find(key);
++
++    if (it != conts_.end()) {
++        it->second.refs++;
++        out = &it->second;
++        return NIXL_SUCCESS;
++    }
++
++    contHandles h{};
++    int rc = daos_pool_connect(pool.c_str(), nullptr, DAOS_PC_RW, &h.poh, nullptr, nullptr);
++    if (rc != 0) {
++        NIXL_ERROR << "daos_pool_connect(" << pool << ") failed: " << rc;
++        return NIXL_ERR_BACKEND;
++    }
++
++    rc = daos_cont_open(h.poh, cont.c_str(), DAOS_COO_RW, &h.coh, nullptr, nullptr);
++    if (rc != 0) {
++        NIXL_ERROR << "daos_cont_open(" << cont << ") failed: " << rc;
++        daos_pool_disconnect(h.poh, nullptr);
++        return NIXL_ERR_BACKEND;
++    }
++
++    h.refs = 1;
++    out = &conts_.emplace(key, h).first->second;
++    return NIXL_SUCCESS;
++}
++
++void
++nixlDaosEngine::putCont(const std::string &pool, const std::string &cont) {
++    const std::string key = pool + "/" + cont;
++    auto it = conts_.find(key);
++    if (it == conts_.end()) {
++        return;
++    }
++
++    if (--it->second.refs > 0) {
++        return;
++    }
++
++    daos_cont_close(it->second.coh, nullptr);
++    daos_pool_disconnect(it->second.poh, nullptr);
++    conts_.erase(it);
++}
++
++nixl_status_t
++nixlDaosEngine::registerMem(const nixlBlobDesc &mem,
++                            const nixl_mem_t &nixl_mem,
++                            nixlBackendMD *&out) {
++    out = nullptr;
++
++    /* Host and device buffers are the transfer source/sink, not something DAOS
++     * holds: the buffer is handed to the fetch as an sgl at transfer time and
++     * needs no registration of its own. Accept them so the agent can pair one
++     * with a FILE descriptor, and return no metadata.
++     *
++     * Device memory needs no registration here either. CaRT registers the
++     * buffer when it builds the bulk handle, unless a pre-registered RDMA key
++     * is supplied in daos_mem_attr_t::ma_rkey -- which is the path that avoids
++     * double registration when cuFile already owns the buffer, and is left for
++     * when there is a cuFile-registered pool to test against. */
++    if (nixl_mem == DRAM_SEG) {
++        return NIXL_SUCCESS;
++    }
++#ifdef NIXL_DAOS_HAVE_GPU
++    if (nixl_mem == VRAM_SEG) {
++        return NIXL_SUCCESS;
++    }
++#endif
++
++    if (nixl_mem != FILE_SEG) {
++        return NIXL_ERR_NOT_SUPPORTED;
++    }
++
++    daosTarget t;
++    if (!parseTarget(mem.metaInfo, t)) {
++        NIXL_ERROR << "DAOS metaInfo must be \"pool/container\" or "
++                      "\"pool/container/<hi>.<lo>\", got: "
++                   << mem.metaInfo;
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
++    std::lock_guard<std::mutex> g(mtx_);
++
++    contHandles *ch = nullptr;
++    const nixl_status_t st = getCont(t.pool, t.cont, ch);
++    if (st != NIXL_SUCCESS) {
++        return st;
++    }
++
++    daos_obj_id_t oid = t.oid;
++    if (!t.haveOid) {
++        /* Derive the object id from devId. Deterministic on purpose: the same
++         * devId must name the same object across process restarts, otherwise a
++         * cache cannot find what it stored. */
++        oid.hi = 0;
++        oid.lo = mem.devId;
++        const int rc = daos_obj_generate_oid(ch->coh, &oid, DAOS_OT_MULTI_HASHED, OC_UNKNOWN, 0, 0);
++        if (rc != 0) {
++            NIXL_ERROR << "daos_obj_generate_oid failed: " << rc;
++            putCont(t.pool, t.cont);
++            return NIXL_ERR_BACKEND;
++        }
++    }
++
++    daos_handle_t oh;
++    const int rc = daos_obj_open(ch->coh, oid, DAOS_OO_RW, &oh, nullptr);
++    if (rc != 0) {
++        NIXL_ERROR << "daos_obj_open failed: " << rc;
++        putCont(t.pool, t.cont);
++        return NIXL_ERR_BACKEND;
++    }
++
++    out = new nixlDaosObjMD(t.pool, t.cont, oh, oid, mem.devId);
++    return NIXL_SUCCESS;
++}
++
++nixl_status_t
++nixlDaosEngine::deregisterMem(nixlBackendMD *meta) {
++    /* DRAM registrations produced no metadata; nothing to undo. */
++    if (meta == nullptr) {
++        return NIXL_SUCCESS;
++    }
++
++    auto *md = dynamic_cast<nixlDaosObjMD *>(meta);
++    if (md == nullptr) {
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
++    std::lock_guard<std::mutex> g(mtx_);
++
++    const int rc = daos_obj_close(md->oh_, nullptr);
++    if (rc != 0) {
++        NIXL_ERROR << "daos_obj_close failed: " << rc;
++    }
++
++    putCont(md->pool_, md->cont_);
++    delete md;
++
++    return rc == 0 ? NIXL_SUCCESS : NIXL_ERR_BACKEND;
++}
++
++/* ---- transfer ------------------------------------------------------------ */
++
++/*
++ * Group the paired descriptors by (object, dkey) and build the DAOS structures
++ * once. Nothing is submitted here.
++ *
++ * Pairing follows the convention every storage backend in NIXL uses and POSIX
++ * documents by example: local and remote are walked together by index, local
++ * is the DRAM buffer and remote is the storage side, so remote->addr is the
++ * offset and remote->len the length.
++ */
++nixl_status_t
++nixlDaosEngine::prepXfer(const nixl_xfer_op_t &operation,
++                         const nixl_meta_dlist_t &local,
++                         const nixl_meta_dlist_t &remote,
++                         const std::string &remote_agent,
++                         nixlBackendReqH *&handle,
++                         const nixl_opt_b_args_t *opt_args) const {
++    handle = nullptr;
++
++    if (local.descCount() != remote.descCount()) {
++        NIXL_ERROR << "DAOS: descriptor counts differ (local " << local.descCount() << ", remote "
++                   << remote.descCount() << ")";
++        return NIXL_ERR_INVALID_PARAM;
++    }
++    if (local.descCount() == 0) {
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
++    /* First pass: bucket by (object handle, dkey) without touching the DAOS
++     * structures, so the vectors can be sized exactly before any pointer into
++     * them is taken. */
++    struct entry {
++        uint64_t akey;
++        size_t len;
++        void *buf;
++        uint64_t localDev; /* CUDA ordinal when the local side is VRAM */
++    };
++
++    std::map<std::pair<uint64_t, uint64_t>, std::pair<daos_handle_t, std::vector<entry>>> buckets;
++
++    auto li = local.begin();
++    auto ri = remote.begin();
++    for (; li != local.end() && ri != remote.end(); ++li, ++ri) {
++        auto *md = dynamic_cast<nixlDaosObjMD *>(ri->metadataP);
++        if (md == nullptr) {
++            NIXL_ERROR << "DAOS: remote descriptor has no DAOS metadata; was it "
++                          "registered with FILE_SEG?";
++            return NIXL_ERR_INVALID_PARAM;
++        }
++        if (li->len != ri->len) {
++            NIXL_ERROR << "DAOS: paired descriptors differ in length (" << li->len << " vs "
++                       << ri->len << ")";
++            return NIXL_ERR_INVALID_PARAM;
++        }
++
++        const uint64_t dkey = ri->addr / dkeySpan_;
++        const uint64_t akey = ri->addr % dkeySpan_;
++        auto &slot = buckets[{md->devId_, dkey}];
++        slot.first = md->oh_;
++        slot.second.push_back({akey, ri->len, reinterpret_cast<void *>(li->addr), li->devId});
++    }
++
++    auto req = std::make_unique<nixlDaosBackendReqH>();
++    req->op = operation;
++    req->groups.reserve(buckets.size());
++
++#ifdef NIXL_DAOS_HAVE_GPU
++    /* The descriptor list carries the segment type, so the local side tells us
++     * whether these buffers are device memory. devId on a VRAM descriptor is
++     * the CUDA ordinal. */
++    const bool localIsGpu = local.getType() == VRAM_SEG;
++#endif
++
++    for (auto &kv : buckets) {
++        const auto &ents = kv.second.second;
++        nixlDaosIoGroup g;
++        g.oh = kv.second.first;
++        g.dkeyVal = kv.first.second;
++
++        const size_t n = ents.size();
++        g.akeyVals.resize(n);
++        g.iods.resize(n);
++        g.recxs.resize(n);
++        g.sgls.resize(n);
++        g.iovs.resize(n);
++
++        for (size_t i = 0; i < n; i++) {
++            g.akeyVals[i] = ents[i].akey;
++
++            g.recxs[i].rx_idx = 0;
++            g.recxs[i].rx_nr = ents[i].len;
++
++            g.iods[i] = daos_iod_t{};
++            d_iov_set(&g.iods[i].iod_name, &g.akeyVals[i], sizeof(uint64_t));
++            g.iods[i].iod_type = DAOS_IOD_ARRAY;
++            g.iods[i].iod_size = 1; /* byte records */
++            g.iods[i].iod_nr = 1;
++            g.iods[i].iod_recxs = &g.recxs[i];
++
++            d_iov_set(&g.iovs[i], ents[i].buf, ents[i].len);
++            g.sgls[i].sg_nr = 1;
++            g.sgls[i].sg_nr_out = 0;
++            g.sgls[i].sg_iovs = &g.iovs[i];
++        }
++
++#ifdef NIXL_DAOS_HAVE_GPU
++        if (localIsGpu) {
++            g.memAttrs.resize(n);
++            for (size_t i = 0; i < n; i++) {
++                g.memAttrs[i] = daos_mem_attr_t{};
++                g.memAttrs[i].ma_mem_type = DAOS_MEM_TYPE_CUDA;
++                g.memAttrs[i].ma_device_id = ents[i].localDev;
++                /* ma_rkey left zeroed: CaRT registers the buffer itself. */
++            }
++        }
++#endif
++        req->groups.push_back(std::move(g));
++    }
++
++    NIXL_DEBUG << "DAOS: prepared " << local.descCount() << " descriptor(s) as "
++               << req->groups.size() << " RPC(s)";
++
++    handle = req.release();
++    return NIXL_SUCCESS;
++}
++
++/*
++ * Optional event-queue path, off by default.
++ *
++ * https://github.com/gluesys/lmcache-daos/blob/main/doc/FAILURE-MODES.md measured why it is wanted:
++ * when the engine is killed mid-write, a blocking daos_obj_update() never returns -- 16 of 16
++ * threads still inside the call at 150 s -- while the same work submitted to an event queue and
++ * polled with a timeout released every thread at 5.01 s, and the
++ * daos_event_abort()/daos_event_fini() that tidies up cost 0.00 s each.
++ *
++ * The original rejection
++ * (https://github.com/gluesys/lmcache-daos/blob/main/doc/DESIGN-AND-VALIDATION.md) measured 1 EQ
++ * capping at ~12.5 GB/s and 16 EQs collapsing to 2.74, against 34-35 GB/s blocking -- but on the
++ * DFS async path through Python with 28 MiB reads, which is not this. It does not transfer.
++ * Measured on client-5 against cell1/cell2, 400G verbs, the regime that rejection came from, four
++ * runs each:
++ *
++ *   blocking   31.29  31.00  30.70  31.15    mean 31.04 GB/s
++ *   event queue 30.44  31.27  30.23  30.61   mean 30.64 GB/s
++ *
++ * The ranges overlap -- the event queue beat blocking on one run -- so the cost
++ * is not measurable here, let alone the 3-12x the old sweep implied. Unfolded
++ * (4800 requests instead of 120) it is the same story: 7.55 against 7.50.
++ *
++ * That is why this is now ON by default. A deadline that costs nothing and
++ * turns 16 permanently lost threads into a bounded error is not a trade.
++ *
++ * The default is 60 s rather than something tight: a request measured 1.34 ms
++ * here, so 60 s is four orders of magnitude of headroom and still bounds the
++ * wedge. It is a backstop for an engine that has died, not a latency target.
++ *
++ * Depth 1 per thread is deliberate, and it is why this is a small change: the
++ * thread pool, the concurrency and the RPC shape are all unchanged. The only
++ * difference is that the call now has a deadline the caller owns.
++ */
++namespace {
++
++double
++nixlDaosEqTimeout() {
++    static const double t = [] {
++        const char *e = std::getenv("NIXL_DAOS_EQ_TIMEOUT");
++        return e ? std::atof(e) : 60.0; /* 0 in the environment disables it */
++    }();
++    return t;
++}
++
++} // namespace
++
++/*
++ * A borrow-and-return pool of event queues.
++ *
++ * The obvious implementation -- one EQ per worker thread, thread_local -- was
++ * written first and measured 35% SLOWER than blocking (2.08 vs 3.12 GB/s).
++ * The reason is that the thread pool is deliberately oversized: 64 threads
++ * serving at most `inflight` concurrent requests. Idle threads cost nothing,
++ * but an idle EQ holds a network context, so that arrangement paid for 64
++ * contexts to run 16 requests. Sizing the pool to the concurrency instead:
++ *
++ *   blocking, 64 threads    3.12 GB/s      eq, 64 EQs    2.08 GB/s
++ *   blocking, 16 threads    3.12           eq, 16 EQs    3.24
++ *                                          eq,  8 EQs    3.27
++ *
++ * Blocking is flat because unused threads are free; the event path is not,
++ * which is most of what the original "EQs are expensive" finding was about.
++ *
++ * Borrowing fixes it without a tuning knob. An EQ is held only for the
++ * duration of one request, so the pool grows to the actual high-water
++ * concurrency and no further -- 16 here, whatever the thread count. It also
++ * keeps the property the per-thread version had for free: no two threads ever
++ * hold the same EQ, so a poll cannot harvest another thread's completion.
++ */
++class nixlDaosEqPool {
++public:
++    ~nixlDaosEqPool() {
++        for (auto h : all_) {
++            daos_eq_destroy(h, 0);
++        }
++    }
++
++    bool
++    borrow(daos_handle_t &out) {
++        {
++            std::lock_guard<std::mutex> g(m_);
++            if (!free_.empty()) {
++                out = free_.back();
++                free_.pop_back();
++                return true;
++            }
++        }
++        /* Created outside the lock: daos_eq_create() talks to the client
++         * library and is far too slow to hold a mutex across. */
++        daos_handle_t h{};
++        if (daos_eq_create(&h) != 0) {
++            return false;
++        }
++        {
++            std::lock_guard<std::mutex> g(m_);
++            all_.push_back(h);
++        }
++        out = h;
++        return true;
++    }
++
++    void
++    giveBack(daos_handle_t h) {
++        std::lock_guard<std::mutex> g(m_);
++        free_.push_back(h);
++    }
++
++private:
++    std::mutex m_;
++    std::vector<daos_handle_t> free_; /* available now */
++    std::vector<daos_handle_t> all_; /* every EQ ever made, for teardown */
++};
++
++/*
++ * Submit. Each group is one daos_obj_fetch()/daos_obj_update().
++ *
++ * The work runs on a pool thread. Whether that thread then BLOCKS inside DAOS
++ * or waits on an event queue with a deadline is decided by
++ * NIXL_DAOS_EQ_TIMEOUT -- see the block above for what each costs and what is
++ * still unmeasured. Either way prepXfer() has already folded the descriptor
++ * list down to a handful of RPCs, so the thread count tracks requests rather
++ * than descriptors.
++ */
++nixl_status_t
++nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
++                         const nixl_meta_dlist_t &local,
++                         const nixl_meta_dlist_t &remote,
++                         const std::string &remote_agent,
++                         nixlBackendReqH *&handle,
++                         const nixl_opt_b_args_t *opt_args) const {
++    auto *req = dynamic_cast<nixlDaosBackendReqH *>(handle);
++    if (req == nullptr) {
++        return NIXL_ERR_INVALID_PARAM;
++    }
++    if (req->groups.empty()) {
++        return NIXL_SUCCESS;
++    }
++
++    req->status.store(NIXL_SUCCESS);
++    req->pending.store(static_cast<unsigned>(req->groups.size()));
++    req->posted = true;
++
++    for (auto &g : req->groups) {
++        nixlDaosIoGroup *gp = &g;
++        pool_->submit([this, req, gp]() {
++            daos_key_t dkey;
++            d_iov_set(&dkey, &gp->dkeyVal, sizeof(uint64_t));
++
++            const unsigned nr = static_cast<unsigned>(gp->iods.size());
++            const double eqTimeout = nixlDaosEqTimeout();
++            daos_handle_t eq{};
++            daos_event_t ev;
++            daos_event_t *evp = nullptr;
++            bool useEq = false;
++            int rc;
++
++            if (eqTimeout > 0.0) {
++                /* A queue we could not get is a reason to fall back to the
++                 * blocking call, not to fail the transfer: the deadline is an
++                 * improvement on the failure path, never a prerequisite for
++                 * doing the I/O. */
++                if (eqPool_->borrow(eq)) {
++                    if (daos_event_init(&ev, eq, nullptr) == 0) {
++                        useEq = true;
++                    } else {
++                        eqPool_->giveBack(eq);
++                    }
++                }
++                if (!useEq) {
++                    NIXL_ERROR << "DAOS: no event queue available, "
++                                  "falling back to a blocking call";
++                }
++            }
++            daos_event_t *evArg = useEq ? &ev : nullptr;
++#ifdef NIXL_DAOS_HAVE_GPU
++            if (!gp->memAttrs.empty()) {
++                /* This once said "synchronous only -- no event queue", and
++                 * used that to justify putting the work on a thread. It was
++                 * wrong. In theodore/b_cufile the GPU entry points take an
++                 * event and hand it to the same task machinery as the host
++                 * ones -- src/client/api/object.c:213 differs from :197 only
++                 * by the GPU_DIRECT flag and args->mem_attrs:
++                 *
++                 *   update      dc_obj_update_task_create(oh, th, flags, ..., ev, ...)
++                 *   update_gpu  dc_obj_update_task_create(oh, th, flags|GPU_DIRECT, ..., ev, ...)
++                 *
++                 * So the nullptr below is a choice, not a constraint, and it
++                 * is currently the wrong one:
++                 * https://github.com/gluesys/lmcache-daos/blob/main/doc/FAILURE-MODES.md measured
++                 * the event queue as the only bounded way out of a dead engine (16/16 threads lost
++                 * blocking, 0/16 with a poll timeout). The VRAM_SEG path can have that escape; it
++                 * just does not yet. */
++                rc = req->op == NIXL_READ ? daos_obj_fetch_gpu(gp->oh,
++                                                               DAOS_TX_NONE,
++                                                               0,
++                                                               &dkey,
++                                                               nr,
++                                                               gp->iods.data(),
++                                                               gp->sgls.data(),
++                                                               gp->memAttrs.data(),
++                                                               nullptr,
++                                                               evArg) :
++                                            daos_obj_update_gpu(gp->oh,
++                                                                DAOS_TX_NONE,
++                                                                0,
++                                                                &dkey,
++                                                                nr,
++                                                                gp->iods.data(),
++                                                                gp->sgls.data(),
++                                                                gp->memAttrs.data(),
++                                                                evArg);
++            } else
++#endif
++            {
++                rc = req->op == NIXL_READ ? daos_obj_fetch(gp->oh,
++                                                           DAOS_TX_NONE,
++                                                           0,
++                                                           &dkey,
++                                                           nr,
++                                                           gp->iods.data(),
++                                                           gp->sgls.data(),
++                                                           nullptr,
++                                                           evArg) :
++                                            daos_obj_update(gp->oh,
++                                                            DAOS_TX_NONE,
++                                                            0,
++                                                            &dkey,
++                                                            nr,
++                                                            gp->iods.data(),
++                                                            gp->sgls.data(),
++                                                            evArg);
++            }
++
++            if (useEq) {
++                if (rc == 0) {
++                    /* Timeout is in microseconds. n == 0 means the deadline
++                     * passed with the RPC still outstanding -- the thread is
++                     * reclaimable, the operation is not, so abort it rather
++                     * than leaving DAOS holding a pointer into a stack frame
++                     * that is about to go away. Both calls measured at 0.00 s
++                     * against a dead engine. */
++                    const int n =
++                        daos_eq_poll(eq, 1, static_cast<int64_t>(eqTimeout * 1e6), 1, &evp);
++                    if (n == 0) {
++                        NIXL_ERROR << "DAOS: no completion in " << eqTimeout
++                                   << "s, abandoning the request";
++                        daos_event_abort(&ev);
++                        rc = -DER_TIMEDOUT;
++                    } else {
++                        rc = (n < 0) ? n : evp->ev_error;
++                    }
++                }
++                daos_event_fini(&ev);
++                eqPool_->giveBack(eq);
++            }
++
++            if (rc != 0) {
++                NIXL_ERROR << (req->op == NIXL_READ ? "daos_obj_fetch" : "daos_obj_update")
++                           << " failed: " << rc;
++                req->recordError(NIXL_ERR_BACKEND);
++            } else if (req->op == NIXL_READ) {
++                /* A fetch of a key that was never written returns success with
++                 * iod_size 0. Silence there would be a miss reported as a hit,
++                 * and this project has already paid for one of those. */
++                for (size_t i = 0; i < gp->iods.size(); i++) {
++                    if (gp->iods[i].iod_size == 0) {
++                        NIXL_ERROR << "DAOS: read of an absent key (dkey " << gp->dkeyVal
++                                   << ", akey " << gp->akeyVals[i] << ")";
++                        req->recordError(NIXL_ERR_NOT_FOUND);
++                        break;
++                    }
++                }
++            }
++            req->finishOne();
++        });
++    }
++
++    return NIXL_IN_PROG;
++}
++
++nixl_status_t
++nixlDaosEngine::checkXfer(nixlBackendReqH *handle) const {
++    auto *req = dynamic_cast<nixlDaosBackendReqH *>(handle);
++    if (req == nullptr) {
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
++    /* Prepared but not posted: nothing is running, so nothing can have
++     * finished. Saying SUCCESS here would let a caller act on data that was
++     * never fetched. */
++    if (!req->posted) {
++        return NIXL_IN_PROG;
++    }
++    if (req->pending.load() != 0) {
++        return NIXL_IN_PROG;
++    }
++
++    return static_cast<nixl_status_t>(req->status.load());
++}
++
++nixl_status_t
++nixlDaosEngine::releaseReqH(nixlBackendReqH *handle) const {
++    auto *req = dynamic_cast<nixlDaosBackendReqH *>(handle);
++    if (req == nullptr) {
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
++    /* DAOS has no cancel for a blocking call already in flight, so the only
++     * safe way out is to let it finish: the group vectors the workers read
++     * from die with this object. */
++    if (req->posted) {
++        req->waitDone();
++    }
++
++    delete req;
++    return NIXL_SUCCESS;
++}
+diff --git a/src/plugins/daos/daos_backend.h b/src/plugins/daos/daos_backend.h
+new file mode 100644
+index 0000000..808188b
+--- /dev/null
++++ b/src/plugins/daos/daos_backend.h
+@@ -0,0 +1,344 @@
++/*
++ * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++/*
++ * NIXL backend for DAOS.
++ *
++ * Storage model: the raw object API, not DFS. Measured on the testbed
++ * (https://github.com/gluesys/lmcache-daos/blob/main/doc/LAYERWISE-MEASUREMENT.md), the per-object
++ * cost is DFS         0.63   ms + 0.067  ms/MiB object API  0.0137 ms + 0.0385 ms/MiB so DFS spends
++ * ~90% of a 1 MiB read on overhead dkey/akey does not pay. The object API also folds a whole
++ * descriptor list into one daos_obj_fetch() via its iod array -- exactly the shape prepXfer() hands
++ * us, and something a file-per-object model cannot express.
++ *
++ * Descriptor mapping. nixlBasicDesc carries only addr/len/devId, and
++ * nixlBlobDesc adds metaInfo:
++ *     metaInfo -> "pool/container[/oid_hi.oid_lo]"   what to open
++ *     devId    -> caller's key for the handle we hand back
++ *     addr     -> offset within the object; with the layer layout the akey
++ *                 index is derived from it
++ *     len      -> bytes
++ *
++ * dkey/akey split. A descriptor gives one offset, and DAOS wants two levels of
++ * key, so the offset is cut at a span:
++ *     dkey = addr / dkeySpan        akey = addr % dkeySpan
++ * dkey decides placement, so descriptors inside one span land on one target and
++ * fold into a single RPC, while separate spans spread across targets. Both
++ * halves of that matter, and the benchmark says why: with 40 akeys under one
++ * dkey a 4.69 GiB read took 204 ms, with one akey per RPC 245 ms, and with the
++ * whole 40 MiB as a single akey extent 571 ms. Folding wins, but only while the
++ * data still arrives as separate akeys rather than one long extent.
++ */
++#ifndef NIXL_SRC_PLUGINS_DAOS_DAOS_BACKEND_H
++#define NIXL_SRC_PLUGINS_DAOS_DAOS_BACKEND_H
++
++#include <atomic>
++#include <condition_variable>
++#include <cstdint>
++#include <functional>
++#include <map>
++#include <memory>
++#include <mutex>
++#include <queue>
++#include <string>
++#include <thread>
++#include <vector>
++
++#include <daos.h>
++
++#include "backend/backend_engine.h"
++
++/*
++ * What registerMem() hands back. Owns nothing by itself: the pool and
++ * container handles are shared between every object registered against the
++ * same "pool/container", so they are refcounted by the engine and only closed
++ * when the last object under them goes.
++ */
++class nixlDaosObjMD : public nixlBackendMD {
++public:
++    nixlDaosObjMD(const std::string &pool,
++                  const std::string &cont,
++                  daos_handle_t oh,
++                  daos_obj_id_t oid,
++                  uint64_t dev_id)
++        : nixlBackendMD(true),
++          pool_(pool),
++          cont_(cont),
++          oh_(oh),
++          oid_(oid),
++          devId_(dev_id) {}
++
++    ~nixlDaosObjMD() override = default;
++
++    std::string pool_;
++    std::string cont_;
++    daos_handle_t oh_;
++    daos_obj_id_t oid_;
++    uint64_t devId_;
++};
++
++/*
++ * One group of descriptors that share an object and a dkey, and therefore
++ * become one daos_obj_fetch()/daos_obj_update() call. The vectors own the
++ * memory that the DAOS structures point into, so they are sized once in
++ * prepXfer() and never grown afterwards -- a reallocation here would leave
++ * iod_recxs and sg_iovs dangling.
++ */
++struct nixlDaosIoGroup {
++    daos_handle_t oh{};
++    uint64_t dkeyVal = 0;
++    std::vector<uint64_t> akeyVals;
++    std::vector<daos_iod_t> iods;
++    std::vector<daos_recx_t> recxs;
++    std::vector<d_sg_list_t> sgls;
++    std::vector<d_iov_t> iovs;
++#ifdef NIXL_DAOS_HAVE_GPU
++    /* One per sgl, as daos_obj_fetch_gpu() requires; empty for host memory,
++     * which is how the call is told to take the ordinary path. */
++    std::vector<daos_mem_attr_t> memAttrs;
++#endif
++};
++
++/*
++ * A fixed pool of worker threads.
++ *
++ * The first implementation spawned a thread per posted request. Measured on
++ * the testbed at 400G, that cost about 0.096 ms per layer -- roughly seven
++ * times a DAOS RPC's own fixed cost of 0.0137 ms -- and it is why the
++ * unfolded arm of the benchmark collapsed to 8.06 GB/s against 31.16 GB/s
++ * folded. Folding hid the cost because it left only 120 requests; nothing
++ * guarantees a real workload folds that well, so the threads had to go.
++ *
++ * Blocking DAOS calls on a pool, rather than a DAOS event queue: the event
++ * path serialises on the per-EQ eqx_lock and has been measured to cap around
++ * 7-12 GB/s however the queues are arranged.
++ */
++class nixlDaosThreadPool {
++public:
++    explicit nixlDaosThreadPool(unsigned n);
++    ~nixlDaosThreadPool();
++
++    nixlDaosThreadPool(const nixlDaosThreadPool &) = delete;
++    void
++    operator=(const nixlDaosThreadPool &) = delete;
++
++    void
++    submit(std::function<void()> job);
++
++private:
++    std::vector<std::thread> workers_;
++    std::queue<std::function<void()>> q_;
++    std::mutex m_;
++    std::condition_variable cv_;
++    bool stop_ = false;
++};
++
++class nixlDaosEqPool;
++
++class nixlDaosBackendReqH : public nixlBackendReqH {
++public:
++    nixlDaosBackendReqH() = default;
++    ~nixlDaosBackendReqH() override = default;
++
++    nixl_xfer_op_t op = NIXL_READ;
++    std::vector<nixlDaosIoGroup> groups;
++
++    /* One outstanding count per request; workers decrement as groups finish.
++     * The first non-success wins, so a later group cannot mask an earlier
++     * failure. */
++    std::atomic<unsigned> pending{0};
++    std::atomic<int> status{NIXL_SUCCESS};
++    bool posted = false;
++
++    void
++    finishOne() {
++        if (pending.fetch_sub(1) == 1) {
++            /* Taking the lock before notifying is what makes waitDone() safe:
++             * a waiter that has already evaluated the predicate is inside
++             * wait() holding nothing, and this hands off cleanly. */
++            std::lock_guard<std::mutex> g(doneMtx);
++            doneCv.notify_all();
++        }
++    }
++
++    void
++    waitDone() {
++        std::unique_lock<std::mutex> g(doneMtx);
++        doneCv.wait(g, [this] { return pending.load() == 0; });
++    }
++
++    void
++    recordError(nixl_status_t st) {
++        int expected = NIXL_SUCCESS;
++        status.compare_exchange_strong(expected, static_cast<int>(st));
++    }
++
++private:
++    std::mutex doneMtx;
++    std::condition_variable doneCv;
++};
++
++class nixlDaosEngine : public nixlBackendEngine {
++public:
++    static nixl_b_params_t
++    getPluginParams();
++
++    explicit nixlDaosEngine(const nixlBackendInitParams *init_params);
++    ~nixlDaosEngine() override;
++
++    /* ---- capability declaration (final) ---------------------------------
++     * DAOS is reached through its own client, so NIXL does not move bytes
++     * between agents on our behalf: local only, no notification channel.
++     * These are the same answers POSIX and GDS give.
++     *
++     * VRAM_SEG appears only when the client actually exports
++     * daos_obj_fetch_gpu(). Those entry points live in the unmerged b_cufile
++     * branch, so a stock DAOS cannot serve them, and advertising a capability
++     * the library does not have turns a clean "unsupported" into a failure
++     * further down. meson decides this, not a runtime check.
++     */
++    bool
++    supportsRemote() const override {
++        return false;
++    }
++
++    bool
++    supportsLocal() const override {
++        return true;
++    }
++
++    bool
++    supportsNotif() const override {
++        return false;
++    }
++
++    nixl_mem_list_t
++    getSupportedMems() const override {
++#ifdef NIXL_DAOS_HAVE_GPU
++        return {FILE_SEG, DRAM_SEG, VRAM_SEG};
++#else
++        return {FILE_SEG, DRAM_SEG};
++#endif
++    }
++
++    /* ---- lifecycle no-ops (final) ---------------------------------------
++     * There is no peer to connect to and no metadata to exchange: the DAOS
++     * client library owns the connection to the pool.
++     */
++    nixl_status_t
++    connect(const std::string &remote_agent) override {
++        return NIXL_SUCCESS;
++    }
++
++    nixl_status_t
++    disconnect(const std::string &remote_agent) override {
++        return NIXL_SUCCESS;
++    }
++
++    /* Required whenever supportsLocal() is true, and the base class returns
++     * an error rather than a default -- a backend that declares local support
++     * and skips this fails every registerMem() the agent makes, which is what
++     * happened here. For a loopback transfer the "remote" metadata is the same
++     * object, so the handle passes straight through. POSIX and GDS do the
++     * same. Nothing exercises it when the backend is driven directly, which is
++     * why it survived until the first agent-level test. */
++    nixl_status_t
++    loadLocalMD(nixlBackendMD *input, nixlBackendMD *&output) override {
++        output = input;
++        return NIXL_SUCCESS;
++    }
++
++    nixl_status_t
++    unloadMD(nixlBackendMD *input) override {
++        return NIXL_SUCCESS;
++    }
++
++    /* ---- implemented ----------------------------------------------------- */
++    nixl_status_t
++    registerMem(const nixlBlobDesc &mem, const nixl_mem_t &nixl_mem, nixlBackendMD *&out) override;
++
++    nixl_status_t
++    deregisterMem(nixlBackendMD *meta) override;
++
++    /* ---- transfer --------------------------------------------------------- */
++    nixl_status_t
++    prepXfer(const nixl_xfer_op_t &operation,
++             const nixl_meta_dlist_t &local,
++             const nixl_meta_dlist_t &remote,
++             const std::string &remote_agent,
++             nixlBackendReqH *&handle,
++             const nixl_opt_b_args_t *opt_args = nullptr) const override;
++
++    nixl_status_t
++    postXfer(const nixl_xfer_op_t &operation,
++             const nixl_meta_dlist_t &local,
++             const nixl_meta_dlist_t &remote,
++             const std::string &remote_agent,
++             nixlBackendReqH *&handle,
++             const nixl_opt_b_args_t *opt_args = nullptr) const override;
++
++    nixl_status_t
++    checkXfer(nixlBackendReqH *handle) const override;
++
++    nixl_status_t
++    releaseReqH(nixlBackendReqH *handle) const override;
++
++private:
++    /*
++     * One entry per "pool/container" actually opened. Refcounted because a
++     * deployment registers many objects against one container and closing the
++     * container under a live object handle is a use-after-free on the DAOS
++     * side, not a tidy error.
++     */
++    struct contHandles {
++        daos_handle_t poh;
++        daos_handle_t coh;
++        int refs;
++    };
++
++    nixl_status_t
++    getCont(const std::string &pool, const std::string &cont, contHandles *&out);
++    void
++    putCont(const std::string &pool, const std::string &cont);
++
++    mutable std::mutex mtx_;
++    std::map<std::string, contHandles> conts_;
++    bool daosInited_ = false;
++
++    /* Worker threads. Mutable because postXfer() is const: the interface
++     * treats a transfer as not mutating the engine, which is true of every
++     * field except this one. Sized from NIXL_DAOS_THREADS, default 64, which
++     * is where throughput stops improving on the testbed -- see
++     * https://github.com/gluesys/lmcache-daos/blob/main/doc/NIXL-DAOS-MEASUREMENT.md. */
++    mutable std::unique_ptr<nixlDaosThreadPool> pool_;
++
++    /* Event queues, borrowed per request. Only used when NIXL_DAOS_EQ_TIMEOUT
++     * is set; see daos_backend.cpp for why it is a borrow pool and not one
++     * queue per thread. */
++    /* unique_ptr so the class itself can stay in the .cpp with the
++     * measurements that explain it; the destructor is defined there, which is
++     * where the complete type is needed. */
++    mutable std::unique_ptr<nixlDaosEqPool> eqPool_;
++
++    /* Offset span that maps to one dkey. 64 MiB by default: large enough that a
++     * request's descriptors usually share a dkey and fold into one RPC, small
++     * enough that a big object still spreads over targets. Not yet a plugin
++     * parameter; it should become one as soon as there is a second workload to
++     * tune it against. */
++    uint64_t dkeySpan_ = 64ull << 20;
++};
++
++#endif // NIXL_SRC_PLUGINS_DAOS_DAOS_BACKEND_H
+diff --git a/src/plugins/daos/daos_plugin.cpp b/src/plugins/daos/daos_plugin.cpp
+new file mode 100644
+index 0000000..4bfded7
+--- /dev/null
++++ b/src/plugins/daos/daos_plugin.cpp
+@@ -0,0 +1,43 @@
++/*
++ * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++#include <memory>
++
++#include "backend/backend_plugin.h"
++#include "daos_backend.h"
++
++using daos_plugin_t = nixlBackendPluginCreator<nixlDaosEngine>;
++
++namespace {
++const nixl_b_params_t daos_plugin_params = nixlDaosEngine::getPluginParams();
++} // namespace
++
++#ifdef STATIC_PLUGIN_DAOS
++nixlBackendPlugin *
++createStaticDAOSPlugin() {
++    return daos_plugin_t::create(
++        NIXL_PLUGIN_API_VERSION, "DAOS", "0.1.0", daos_plugin_params, {DRAM_SEG, FILE_SEG});
++}
++#else
++extern "C" NIXL_PLUGIN_EXPORT nixlBackendPlugin *
++nixl_plugin_init() {
++    return daos_plugin_t::create(
++        NIXL_PLUGIN_API_VERSION, "DAOS", "0.1.0", daos_plugin_params, {DRAM_SEG, FILE_SEG});
++}
++
++extern "C" NIXL_PLUGIN_EXPORT void
++nixl_plugin_fini() {}
++#endif
+diff --git a/src/plugins/daos/meson.build b/src/plugins/daos/meson.build
+new file mode 100644
+index 0000000..637a2e5
+--- /dev/null
++++ b/src/plugins/daos/meson.build
+@@ -0,0 +1,89 @@
++# SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
++# SPDX-License-Identifier: Apache-2.0
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++# http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++if get_option('disable_daos_backend')
++    if is_explicit_enable or 'DAOS' in static_plugins
++        error('DAOS plugin requested but the DAOS backend is disabled')
++    endif
++    subdir_done()
++endif
++
++fs = import('fs')
++
++# The DAOS client (headers and libdaos) comes from the daos-devel package or a
++# source build. -Ddaos_path points at the install prefix; empty searches the
++# compiler's default paths.
++daos_path = get_option('daos_path')
++daos_inc_args = []
++daos_lib_dirs = []
++daos_incdirs = [nixl_inc_dirs, utils_inc_dirs]
++if daos_path != ''
++    daos_inc_args = ['-I' + daos_path / 'include']
++    daos_incdirs += [include_directories(daos_path / 'include', is_system: true)]
++    foreach sub : ['lib64', 'lib']
++        if fs.is_dir(daos_path / sub)
++            daos_lib_dirs += [daos_path / sub]
++        endif
++    endforeach
++endif
++
++daos_lib = cpp.find_library('daos', dirs: daos_lib_dirs, required: false)
++daos_header_found = cpp.has_header('daos.h', args: daos_inc_args)
++
++if not (daos_lib.found() and daos_header_found)
++    if is_explicit_enable or 'DAOS' in static_plugins
++        error('DAOS plugin requested but the DAOS client was not found (install daos-devel or set -Ddaos_path)')
++    endif
++    warning('DAOS plugin disabled: DAOS client headers or libdaos not found (set -Ddaos_path)')
++    subdir_done()
++endif
++
++# GPU-direct transfers need daos_obj_fetch_gpu(), which only a DAOS client built
++# with GPU support exports. Without it the plugin advertises no VRAM_SEG.
++daos_gpu_args = []
++if cpp.has_function('daos_obj_fetch_gpu', dependencies: daos_lib, args: daos_inc_args)
++    message('DAOS GPU-direct: available (VRAM_SEG enabled)')
++    daos_gpu_args += ['-DNIXL_DAOS_HAVE_GPU']
++endif
++
++daos_plugin_deps = [nixl_infra, nixl_common_dep, daos_lib]
++daos_sources = ['daos_backend.cpp', 'daos_backend.h', 'daos_plugin.cpp']
++
++if 'DAOS' in static_plugins
++    daos_backend_lib = static_library('DAOS',
++        daos_sources,
++        dependencies: daos_plugin_deps,
++        cpp_args: daos_gpu_args,
++        include_directories: daos_incdirs,
++        install: false,
++        name_prefix: 'libplugin_')
++else
++    daos_backend_lib = shared_library('DAOS',
++        daos_sources,
++        dependencies: daos_plugin_deps,
++        cpp_args: ['-fPIC'] + daos_gpu_args,
++        include_directories: daos_incdirs,
++        install: true,
++        name_prefix: 'libplugin_',
++        install_dir: plugin_install_dir,
++        install_rpath: '$ORIGIN/..')
++    if get_option('buildtype') == 'debug'
++        run_command('sh', '-c',
++            'echo "DAOS=' + daos_backend_lib.full_path() + '" >> ' + plugin_build_dir + '/pluginlist',
++            check: true)
++    endif
++endif
++
++daos_backend_interface = declare_dependency(link_with: daos_backend_lib)
+diff --git a/src/plugins/meson.build b/src/plugins/meson.build
+index bee09bd..052cdfa 100644
+--- a/src/plugins/meson.build
++++ b/src/plugins/meson.build
+@@ -102,6 +102,11 @@ if enabled_plugins.get('INFINIA')
+     subdir('infinia')
+ endif
+ 
++if enabled_plugins.get('DAOS')
++    # The DAOS client lookup lives inside the subdir
++    subdir('daos')
++endif
++
+ gusli_lib_file = 'gusli_clnt'
+ gusli_lib_found = cc.find_library(gusli_lib_file, required: false)
+ if enabled_plugins.get('GUSLI')
+diff --git a/test/unit/plugins/daos/meson.build b/test/unit/plugins/daos/meson.build
+new file mode 100644
+index 0000000..c2a79c2
+--- /dev/null
++++ b/test/unit/plugins/daos/meson.build
+@@ -0,0 +1,31 @@
++# SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
++# SPDX-License-Identifier: Apache-2.0
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++# http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++# These programs need a live DAOS pool and container (reached through a
++# daos_agent), so they are built and installed but not registered with test().
++# test_reg and test_xfer drive the backend class directly; test_agent goes
++# through a real nixlAgent and needs NIXL_PLUGIN_DIR at run time.
++daos_test_inc = daos_incdirs + [include_directories('../../../../src/plugins/daos')]
++foreach t : ['test_reg', 'test_xfer']
++    executable('nixl_daos_' + t, t + '.cpp',
++               dependencies: [nixl_infra, nixl_common_dep, daos_lib, daos_backend_interface, absl_log_dep],
++               include_directories: daos_test_inc,
++               cpp_args: daos_gpu_args,
++               install: true)
++endforeach
++executable('nixl_daos_test_agent', 'test_agent.cpp',
++           dependencies: [nixl_dep, nixl_infra, absl_log_dep],
++           include_directories: daos_test_inc,
++           install: true)
+diff --git a/test/unit/plugins/daos/test_agent.cpp b/test/unit/plugins/daos/test_agent.cpp
+new file mode 100644
+index 0000000..1b06275
+--- /dev/null
++++ b/test/unit/plugins/daos/test_agent.cpp
+@@ -0,0 +1,186 @@
++/*
++ * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++/*
++ * The DAOS backend under a real nixlAgent, rather than driven directly.
++ *
++ * Everything measured so far bypassed the agent, which means one assumption
++ * was never tested: that the descriptor lists prepXfer() receives are shaped
++ * the way the backend expects. That shape -- local is DRAM, remote is storage,
++ * paired by index, remote->addr is the offset -- was inferred from reading
++ * posix_backend.cpp, not from any stated contract. If the agent produces
++ * something else, the folding in prepXfer() is wrong and every number taken
++ * so far describes a path nobody will use.
++ *
++ * The agent also differs in a way that matters: registerMem() takes
++ * nixlBlobDesc (carrying metaInfo), but createXferReq() takes nixlBasicDesc
++ * with no metadata pointer at all. The agent has to match a transfer
++ * descriptor back to a registered region by (addr, len, devId) on its own.
++ * Whether devId alone is enough to name our object is exactly what this
++ * checks.
++ *
++ *   test_agent <pool> <container>
++ */
++#include <cstdint>
++#include <cstdio>
++#include <string>
++#include <thread>
++#include <chrono>
++#include <vector>
++
++#include "nixl.h"
++
++static int fails = 0;
++
++static void
++ck(const char *what, bool ok) {
++    if (!ok) {
++        fails++;
++    }
++    printf("  %-54s %s\n", what, ok ? "PASS" : "FAIL");
++}
++
++static void
++fill(uint64_t *p, size_t bytes, uint64_t tag) {
++    for (size_t i = 0; i < bytes / 8; i++) {
++        p[i] = (tag << 40) | i;
++    }
++}
++
++static size_t
++firstBad(const uint64_t *p, size_t bytes, uint64_t tag) {
++    for (size_t i = 0; i < bytes / 8; i++) {
++        if (p[i] != ((tag << 40) | i)) {
++            return i;
++        }
++    }
++    return SIZE_MAX;
++}
++
++int
++main(int argc, char **argv) {
++    const std::string pool = argc > 1 ? argv[1] : "attr1";
++    const std::string cont = argc > 2 ? argv[2] : "nixlagent";
++
++    const int nLayer = 8;
++    const size_t chunk = 256 * 1024;
++    const uint64_t objDev = 7777;
++
++    nixlAgentConfig cfg;
++    nixlAgent agent("agent-A", cfg);
++
++    std::vector<nixl_backend_t> plugins;
++    ck("getAvailPlugins", agent.getAvailPlugins(plugins) == NIXL_SUCCESS);
++    bool haveDaos = false;
++    for (auto &p : plugins) {
++        if (p == "DAOS") {
++            haveDaos = true;
++        }
++    }
++    printf("  plugins:");
++    for (auto &p : plugins) {
++        printf(" %s", p.c_str());
++    }
++    printf("\n");
++    ck("DAOS plugin is discovered by the agent", haveDaos);
++    if (!haveDaos) {
++        printf("\n  === FAILED (plugin not found; set NIXL_PLUGIN_DIR) ===\n");
++        return 1;
++    }
++
++    nixl_b_params_t params;
++    nixlBackendH *bh = nullptr;
++    ck("createBackend(DAOS)", agent.createBackend("DAOS", params, bh) == NIXL_SUCCESS);
++    if (bh == nullptr) {
++        printf("\n  === FAILED (no backend handle) ===\n");
++        return 1;
++    }
++
++    /* Register the DAOS object (FILE_SEG) and the DRAM buffers separately,
++     * the way an application would. */
++    std::vector<std::vector<uint64_t>> wbuf(nLayer), rbuf(nLayer);
++    for (int i = 0; i < nLayer; i++) {
++        wbuf[i].resize(chunk / 8);
++        rbuf[i].assign(chunk / 8, 0);
++        fill(wbuf[i].data(), chunk, 0xC0 + i);
++    }
++
++    nixl_reg_dlist_t fileReg(FILE_SEG);
++    nixlBlobDesc objDesc(0, 0, objDev);
++    objDesc.metaInfo = pool + "/" + cont;
++    fileReg.addDesc(objDesc);
++
++    nixl_reg_dlist_t dramReg(DRAM_SEG);
++    for (int i = 0; i < nLayer; i++) {
++        dramReg.addDesc(nixlBlobDesc((uintptr_t)wbuf[i].data(), chunk, 0));
++        dramReg.addDesc(nixlBlobDesc((uintptr_t)rbuf[i].data(), chunk, 0));
++    }
++
++    nixl_opt_args_t ext;
++    ext.backends.push_back(bh);
++
++    ck("registerMem(FILE_SEG)", agent.registerMem(fileReg, &ext) == NIXL_SUCCESS);
++    ck("registerMem(DRAM_SEG)", agent.registerMem(dramReg, &ext) == NIXL_SUCCESS);
++
++    auto runXfer = [&](nixl_xfer_op_t op,
++                       std::vector<std::vector<uint64_t>> &bufs) -> nixl_status_t {
++        nixl_xfer_dlist_t loc(DRAM_SEG), rem(FILE_SEG);
++        for (int i = 0; i < nLayer; i++) {
++            loc.addDesc(nixlBasicDesc((uintptr_t)bufs[i].data(), chunk, 0));
++            rem.addDesc(nixlBasicDesc((uintptr_t)i * chunk, chunk, objDev));
++        }
++        nixlXferReqH *req = nullptr;
++        nixl_status_t st = agent.createXferReq(op, loc, rem, "agent-A", req, &ext);
++        if (st != NIXL_SUCCESS) {
++            printf("    createXferReq -> %d\n", (int)st);
++            return st;
++        }
++        st = agent.postXferReq(req);
++        int spins = 0;
++        while (st == NIXL_IN_PROG && spins++ < 30000) {
++            std::this_thread::sleep_for(std::chrono::milliseconds(1));
++            st = agent.getXferStatus(req);
++        }
++        agent.releaseXferReq(req);
++        return st;
++    };
++
++    ck("createXferReq + postXferReq (WRITE)", runXfer(NIXL_WRITE, wbuf) == NIXL_SUCCESS);
++    ck("createXferReq + postXferReq (READ)", runXfer(NIXL_READ, rbuf) == NIXL_SUCCESS);
++
++    bool all = true;
++    for (int i = 0; i < nLayer; i++) {
++        const size_t bad = firstBad(rbuf[i].data(), chunk, 0xC0 + i);
++        if (bad != SIZE_MAX) {
++            all = false;
++            printf("    layer %d: word %zu = 0x%lx, expected 0x%lx\n",
++                   i,
++                   bad,
++                   rbuf[i][bad],
++                   ((uint64_t)(0xC0 + i) << 40 | bad));
++        }
++    }
++    ck("payload identical through the agent", all);
++
++    ck("deregisterMem(DRAM_SEG)", agent.deregisterMem(dramReg, &ext) == NIXL_SUCCESS);
++    ck("deregisterMem(FILE_SEG)", agent.deregisterMem(fileReg, &ext) == NIXL_SUCCESS);
++
++    printf("\n  === %s (%d failure%s) ===\n",
++           fails ? "FAILED" : "ALL PASS",
++           fails,
++           fails == 1 ? "" : "s");
++    return fails ? 1 : 0;
++}
+diff --git a/test/unit/plugins/daos/test_reg.cpp b/test/unit/plugins/daos/test_reg.cpp
+new file mode 100644
+index 0000000..bfce1dd
+--- /dev/null
++++ b/test/unit/plugins/daos/test_reg.cpp
+@@ -0,0 +1,107 @@
++/*
++ * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++/* registerMem/deregisterMem against a live DAOS pool, driven directly (no
++ * agent) so a failure points at the backend rather than at NIXL plumbing. */
++#include <cstdio>
++#include <string>
++#include "daos_backend.h"
++
++static int fails = 0;
++
++static void
++ck(const char *what, nixl_status_t got, nixl_status_t want) {
++    bool ok = (got == want);
++    if (!ok) {
++        fails++;
++    }
++    printf("  %-46s got=%d want=%d  %s\n", what, (int)got, (int)want, ok ? "PASS" : "FAIL");
++}
++
++int
++main(int argc, char **argv) {
++    const std::string pool = argc > 1 ? argv[1] : "kvpool";
++    const std::string cont = argc > 2 ? argv[2] : "nixltest";
++
++    /* nixlBackendEngine's constructor dereferences customParams without a null
++     * check, so it must point at something even when empty. */
++    nixl_b_params_t custom;
++    nixlBackendInitParams p{};
++    p.localAgent = "test";
++    p.type = "DAOS";
++    p.customParams = &custom;
++    nixlDaosEngine eng(&p);
++
++    nixlBackendMD *md1 = nullptr, *md2 = nullptr, *mdd = nullptr;
++
++    nixlBlobDesc dram(0, 4096, 0);
++    ck("DRAM_SEG register (no metadata expected)",
++       eng.registerMem(dram, DRAM_SEG, mdd),
++       NIXL_SUCCESS);
++    printf("  %-46s %s\n", "DRAM metadata is null", mdd == nullptr ? "PASS" : "FAIL");
++    if (mdd != nullptr) {
++        fails++;
++    }
++
++    nixlBlobDesc bad(0, 0, 1);
++    bad.metaInfo = "onlypool";
++    nixlBackendMD *mdb = nullptr;
++    ck("malformed metaInfo rejected", eng.registerMem(bad, FILE_SEG, mdb), NIXL_ERR_INVALID_PARAM);
++
++    nixlBlobDesc o1(0, 0, 1001);
++    o1.metaInfo = pool + "/" + cont;
++    ck("register object devId=1001", eng.registerMem(o1, FILE_SEG, md1), NIXL_SUCCESS);
++
++    nixlBlobDesc o2(0, 0, 1002);
++    o2.metaInfo = pool + "/" + cont;
++    ck("register object devId=1002 (same container)",
++       eng.registerMem(o2, FILE_SEG, md2),
++       NIXL_SUCCESS);
++
++    if (md1 && md2) {
++        auto *a = dynamic_cast<nixlDaosObjMD *>(md1);
++        auto *b = dynamic_cast<nixlDaosObjMD *>(md2);
++        printf("  oid(1001) = %lu.%lu\n", a->oid_.hi, a->oid_.lo);
++        printf("  oid(1002) = %lu.%lu\n", b->oid_.hi, b->oid_.lo);
++        bool distinct = !(a->oid_.hi == b->oid_.hi && a->oid_.lo == b->oid_.lo);
++        printf("  %-46s %s\n", "distinct devId -> distinct oid", distinct ? "PASS" : "FAIL");
++        if (!distinct) {
++            fails++;
++        }
++    }
++
++    ck("deregister 1001", eng.deregisterMem(md1), NIXL_SUCCESS);
++    ck("deregister 1002 (closes container)", eng.deregisterMem(md2), NIXL_SUCCESS);
++    ck("deregister null (DRAM) is a no-op", eng.deregisterMem(nullptr), NIXL_SUCCESS);
++
++    /* Reopening after the refcount hit zero proves putCont() did not leave a
++     * stale handle behind. */
++    nixlBackendMD *md3 = nullptr;
++    nixlBlobDesc o3(0, 0, 1001);
++    o3.metaInfo = pool + "/" + cont;
++    ck("re-register 1001 after container closed", eng.registerMem(o3, FILE_SEG, md3), NIXL_SUCCESS);
++    if (md3) {
++        auto *c = dynamic_cast<nixlDaosObjMD *>(md3);
++        printf("  oid(1001) again = %lu.%lu\n", c->oid_.hi, c->oid_.lo);
++    }
++    ck("deregister again", eng.deregisterMem(md3), NIXL_SUCCESS);
++
++    printf("\n  === %s (%d failure%s) ===\n",
++           fails ? "FAILED" : "ALL PASS",
++           fails,
++           fails == 1 ? "" : "s");
++    return fails ? 1 : 0;
++}
+diff --git a/test/unit/plugins/daos/test_xfer.cpp b/test/unit/plugins/daos/test_xfer.cpp
+new file mode 100644
+index 0000000..82cca54
+--- /dev/null
++++ b/test/unit/plugins/daos/test_xfer.cpp
+@@ -0,0 +1,182 @@
++/*
++ * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++/*
++ * Write-then-read round trip through the DAOS backend, driven directly so a
++ * failure points at the backend rather than at NIXL's agent plumbing.
++ *
++ * The payload is self-describing -- every 8-byte word encodes its own
++ * (descriptor, offset) -- so a region that comes back wrong names where it
++ * actually came from instead of just failing a memcmp. This project has been
++ * bitten by silent cross-chunk corruption before; a plain pattern would have
++ * hidden it.
++ */
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <vector>
++#include <thread>
++#include <chrono>
++
++#include "daos_backend.h"
++
++static int fails = 0;
++
++static void
++ck(const char *what, bool ok) {
++    if (!ok) {
++        fails++;
++    }
++    printf("  %-52s %s\n", what, ok ? "PASS" : "FAIL");
++}
++
++static void
++fill(uint64_t *p, size_t bytes, uint64_t tag) {
++    for (size_t i = 0; i < bytes / 8; i++) {
++        p[i] = (tag << 40) | i;
++    }
++}
++
++static size_t
++firstBad(const uint64_t *p, size_t bytes, uint64_t tag) {
++    for (size_t i = 0; i < bytes / 8; i++) {
++        if (p[i] != ((tag << 40) | i)) {
++            return i;
++        }
++    }
++    return SIZE_MAX;
++}
++
++static nixl_status_t
++runXfer(nixlDaosEngine &eng,
++        nixl_xfer_op_t op,
++        const nixl_meta_dlist_t &loc,
++        const nixl_meta_dlist_t &rem) {
++    nixlBackendReqH *h = nullptr;
++    nixl_status_t st = eng.prepXfer(op, loc, rem, "", h);
++    if (st != NIXL_SUCCESS) {
++        return st;
++    }
++
++    st = eng.postXfer(op, loc, rem, "", h);
++    if (st != NIXL_IN_PROG && st != NIXL_SUCCESS) {
++        eng.releaseReqH(h);
++        return st;
++    }
++
++    int spins = 0;
++    do {
++        st = eng.checkXfer(h);
++        if (st == NIXL_IN_PROG) {
++            std::this_thread::sleep_for(std::chrono::milliseconds(1));
++            spins++;
++        }
++    } while (st == NIXL_IN_PROG && spins < 30000);
++
++    eng.releaseReqH(h);
++    return st;
++}
++
++int
++main(int argc, char **argv) {
++    const std::string pool = argc > 1 ? argv[1] : "kvpool";
++    const std::string cont = argc > 2 ? argv[2] : "nixltest";
++
++    const int nDesc = 8; /* 8 akeys under one dkey -> one RPC */
++    const size_t chunk = 256 * 1024; /* 2 MiB total, fits the 6.5 GB pool */
++
++    nixl_b_params_t custom;
++    nixlBackendInitParams p{};
++    p.localAgent = "test";
++    p.type = "DAOS";
++    p.customParams = &custom;
++    nixlDaosEngine eng(&p);
++
++    nixlBlobDesc obj(0, 0, 4242);
++    obj.metaInfo = pool + "/" + cont;
++    nixlBackendMD *md = nullptr;
++    ck("register object", eng.registerMem(obj, FILE_SEG, md) == NIXL_SUCCESS);
++    if (md == nullptr) {
++        printf("\n  === FAILED (cannot continue) ===\n");
++        return 1;
++    }
++
++    std::vector<std::vector<uint64_t>> wbuf(nDesc), rbuf(nDesc);
++    nixl_meta_dlist_t wloc(DRAM_SEG), rloc(DRAM_SEG), rem(FILE_SEG);
++
++    for (int i = 0; i < nDesc; i++) {
++        wbuf[i].resize(chunk / 8);
++        rbuf[i].assign(chunk / 8, 0);
++        fill(wbuf[i].data(), chunk, 0xA0 + i);
++
++        wloc.addDesc(nixlMetaDesc(reinterpret_cast<uintptr_t>(wbuf[i].data()), chunk, 0, nullptr));
++        rloc.addDesc(nixlMetaDesc(reinterpret_cast<uintptr_t>(rbuf[i].data()), chunk, 0, nullptr));
++        /* offsets inside one 64 MiB dkey span, so all 8 fold into one RPC */
++        rem.addDesc(nixlMetaDesc(static_cast<uintptr_t>(i) * chunk, chunk, 4242, md));
++    }
++
++    ck("write 8 descriptors", runXfer(eng, NIXL_WRITE, wloc, rem) == NIXL_SUCCESS);
++    ck("read them back", runXfer(eng, NIXL_READ, rloc, rem) == NIXL_SUCCESS);
++
++    bool all = true;
++    for (int i = 0; i < nDesc; i++) {
++        const size_t bad = firstBad(rbuf[i].data(), chunk, 0xA0 + i);
++        if (bad != SIZE_MAX) {
++            all = false;
++            printf("    desc %d: word %zu = 0x%lx, expected 0x%lx\n",
++                   i,
++                   bad,
++                   rbuf[i][bad],
++                   ((uint64_t)(0xA0 + i) << 40 | bad));
++        }
++    }
++    ck("payload identical, every descriptor", all);
++
++    /* A key never written must be reported as a miss, not as zeros. */
++    std::vector<uint64_t> miss(chunk / 8, 0);
++    nixl_meta_dlist_t mloc(DRAM_SEG), mrem(FILE_SEG);
++    mloc.addDesc(nixlMetaDesc(reinterpret_cast<uintptr_t>(miss.data()), chunk, 0, nullptr));
++    mrem.addDesc(nixlMetaDesc(999ull * chunk, chunk, 4242, md));
++    ck("read of an unwritten key is NOT silently empty",
++       runXfer(eng, NIXL_READ, mloc, mrem) != NIXL_SUCCESS);
++
++    /* Offsets far apart land in different dkeys: still correct, more RPCs. */
++    std::vector<uint64_t> sw(chunk / 8), sr(chunk / 8, 0);
++    fill(sw.data(), chunk, 0xBB);
++    nixl_meta_dlist_t sloc(DRAM_SEG), srloc(DRAM_SEG), srem(FILE_SEG);
++    sloc.addDesc(nixlMetaDesc(reinterpret_cast<uintptr_t>(sw.data()), chunk, 0, nullptr));
++    srloc.addDesc(nixlMetaDesc(reinterpret_cast<uintptr_t>(sr.data()), chunk, 0, nullptr));
++    srem.addDesc(nixlMetaDesc(300ull << 20, chunk, 4242, md)); /* dkey 4 */
++    ck("write across a dkey boundary", runXfer(eng, NIXL_WRITE, sloc, srem) == NIXL_SUCCESS);
++    ck("read it back", runXfer(eng, NIXL_READ, srloc, srem) == NIXL_SUCCESS);
++    ck("payload identical across dkey boundary", firstBad(sr.data(), chunk, 0xBB) == SIZE_MAX);
++
++    ck("mismatched descriptor counts rejected", [&] {
++        nixlBackendReqH *h = nullptr;
++        nixl_meta_dlist_t one(DRAM_SEG);
++        one.addDesc(nixlMetaDesc(reinterpret_cast<uintptr_t>(sw.data()), chunk, 0, nullptr));
++        return eng.prepXfer(NIXL_READ, one, rem, "", h) == NIXL_ERR_INVALID_PARAM;
++    }());
++
++    ck("deregister", eng.deregisterMem(md) == NIXL_SUCCESS);
++
++    printf("\n  === %s (%d failure%s) ===\n",
++           fails ? "FAILED" : "ALL PASS",
++           fails,
++           fails == 1 ? "" : "s");
++    return fails ? 1 : 0;
++}
+diff --git a/test/unit/plugins/meson.build b/test/unit/plugins/meson.build
+index 7d6a9f0..6e5b6ec 100644
+--- a/test/unit/plugins/meson.build
++++ b/test/unit/plugins/meson.build
+@@ -73,6 +73,10 @@ if is_variable('infinia_backend_interface')
+     subdir('infinia')
+ endif
+ 
++if is_variable('daos_backend_interface')
++    subdir('daos')
++endif
++
+ gusli_lib_path = '/usr/lib/'
+ gusli_lib_file = 'gusli_clnt'
+ gusli_lib_found = cc.find_library(gusli_lib_file, dirs: [gusli_lib_path], required: false)
+-- 
+2.25.1
+

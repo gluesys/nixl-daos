@@ -31,7 +31,7 @@ meson configure build-daos -Dprefix=/opt/nixl >/dev/null
 rm -rf install-daos; DESTDIR=/nixl/install-daos ninja -C build-daos install >/dev/null
 ls install-daos/opt/nixl/lib64/plugins/
 # build_tests=true + non-release buildtype makes meson build test/unit/plugins/daos too;
-# its install: true puts nixl_daos_test into /opt/nixl/bin.
+# its install: true puts nixl_daos_test_{reg,xfer,agent} into /opt/nixl/bin.
 ls install-daos/opt/nixl/bin/ | tr "\n" " "; echo'
 echo "== runtime image"
-$DOCKER build -q -f "$ROOT/images/Dockerfile.runtime" --build-arg BASE="$IMG" -t nixl-daos:dev "$NIXL/install-daos" && $DOCKER run --rm nixl-daos:dev bash -c 'ls $NIXL_PLUGIN_DIR; nixl_daos_test 2>&1 | head -2'
+$DOCKER build -q -f "$ROOT/images/Dockerfile.runtime" --build-arg BASE="$IMG" -t nixl-daos:dev "$NIXL/install-daos" && $DOCKER run --rm nixl-daos:dev bash -c 'ls $NIXL_PLUGIN_DIR; ls /opt/nixl/bin | grep nixl_daos_test'
