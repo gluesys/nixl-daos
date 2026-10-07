@@ -32,7 +32,7 @@ NIXL has no DAOS backend today. A native backend lets Dynamo/KVBM and the LMCach
 - `DRAM_SEG` (local) and `FILE_SEG` (DAOS objects); `VRAM_SEG` when the DAOS client exports GPU-direct entry points
 - Pool and container chosen per descriptor (`metaInfo`), so one engine serves several containers
 
-Measurements and methods: https://github.com/gluesys/lmcache-daos/tree/main/doc (NIXL-DAOS-MEASUREMENT.md, LAYERWISE-MEASUREMENT.md, FAILURE-MODES.md).
+Out-of-tree plugin: https://github.com/gluesys/nixl-daos ([`src/plugins/daos/README.md`](https://github.com/gluesys/nixl-daos/blob/main/src/plugins/daos/README.md) summarizes the measurements and links each method).
 
 ### **How?**
 
