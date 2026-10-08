@@ -39,7 +39,7 @@ Out-of-tree plugin: https://github.com/gluesys/nixl-daos ([`src/plugins/daos/REA
 - `src/plugins/daos/`: `nixlDaosEngine` implementing `nixlBackendEngine`; local transfers only (`supportsLocal()`)
 - Descriptor mapping: `metaInfo` = `"pool/container"` (or with an explicit object id), `devId` = object key, `addr` = offset. Offsets map to `dkey = addr / 64 MiB`, `akey = addr % 64 MiB`, so descriptors within one span fold into a single RPC and separate spans spread across targets
 - Fixed worker pool (`NIXL_DAOS_THREADS`, default 64); each request borrows an event queue and polls it with a deadline (`NIXL_DAOS_EQ_TIMEOUT`, default 60 s)
-- Build follows the INFINIA pattern: `-Ddisable_daos_backend`, `-Ddaos_path`; skipped with a warning when the DAOS client is absent, an error when requested explicitly
+- Build: `-Ddaos_path` points at the DAOS client; skipped with a warning when the client is absent, an error when requested explicitly, and `-Ddisable_plugins=DAOS` leaves it out
 - Tests in `test/unit/plugins/daos/` (`test_reg`, `test_xfer`, `test_agent`); they need a live pool, so they are built but not registered with `meson test`
 
 **Status:** on NIXL main (44c1b56) it builds with `-Werror` against DAOS 2.8 (`daos-devel` 2.8.0-6), is clang-format clean, and passes all three tests against a DAOS 2.8.0-6 server (1 rank, `ofi+tcp`, client in a Kubernetes pod with `daos_agent` as a sidecar).

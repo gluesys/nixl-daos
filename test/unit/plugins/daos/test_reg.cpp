@@ -1,4 +1,5 @@
 /*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -74,9 +75,9 @@ main(int argc, char **argv) {
     if (md1 && md2) {
         auto *a = dynamic_cast<nixlDaosObjMD *>(md1);
         auto *b = dynamic_cast<nixlDaosObjMD *>(md2);
-        printf("  oid(1001) = %lu.%lu\n", a->oid_.hi, a->oid_.lo);
-        printf("  oid(1002) = %lu.%lu\n", b->oid_.hi, b->oid_.lo);
-        bool distinct = !(a->oid_.hi == b->oid_.hi && a->oid_.lo == b->oid_.lo);
+        printf("  oid(1001) = %lu.%lu\n", a->oid.hi, a->oid.lo);
+        printf("  oid(1002) = %lu.%lu\n", b->oid.hi, b->oid.lo);
+        bool distinct = !(a->oid.hi == b->oid.hi && a->oid.lo == b->oid.lo);
         printf("  %-46s %s\n", "distinct devId -> distinct oid", distinct ? "PASS" : "FAIL");
         if (!distinct) {
             fails++;
@@ -95,7 +96,7 @@ main(int argc, char **argv) {
     ck("re-register 1001 after container closed", eng.registerMem(o3, FILE_SEG, md3), NIXL_SUCCESS);
     if (md3) {
         auto *c = dynamic_cast<nixlDaosObjMD *>(md3);
-        printf("  oid(1001) again = %lu.%lu\n", c->oid_.hi, c->oid_.lo);
+        printf("  oid(1001) again = %lu.%lu\n", c->oid.hi, c->oid.lo);
     }
     ck("deregister again", eng.deregisterMem(md3), NIXL_SUCCESS);
 

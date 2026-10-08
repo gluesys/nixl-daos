@@ -12,18 +12,47 @@ index ad264ca..c4b37f4 100644
  enabled_plugins = {}
  
 diff --git a/meson_options.txt b/meson_options.txt
-index 791a532..686a723 100644
+index 791a532..3cccfc2 100644
 --- a/meson_options.txt
 +++ b/meson_options.txt
-@@ -21,6 +21,8 @@ option('disable_gds_backend', type : 'boolean', value : false, description : 'di
+@@ -21,6 +21,7 @@ option('disable_gds_backend', type : 'boolean', value : false, description : 'di
  option('disable_mooncake_backend', type : 'boolean', value : false, description : 'disable mooncake backend')
  option('disable_infinia_backend', type : 'boolean', value : false, description : 'disable infinia backend')
  option('infinia_path', type: 'string', value: '/opt/ddn/red/', description: 'Path to Infinia client install')
-+option('disable_daos_backend', type : 'boolean', value : false, description : 'disable DAOS backend')
 +option('daos_path', type: 'string', value: '', description: 'Path to a DAOS client install (include/ and lib64/); empty searches the default paths')
  option('install_headers', type : 'boolean', value : true, description : 'install headers')
  option('gds_path', type: 'string', value: '/usr/local/cuda/', description: 'Path to GDS CuFile install')
  option('cudapath_inc', type: 'string', value: '', description: 'Include path for CUDA')
+diff --git a/src/core/meson.build b/src/core/meson.build
+index e0dd563..e410d11 100644
+--- a/src/core/meson.build
++++ b/src/core/meson.build
+@@ -37,6 +37,10 @@ if is_variable('infinia_backend_interface') and 'INFINIA' in static_plugins
+     nixl_lib_deps += [ infinia_backend_interface ]
+ endif
+ 
++if is_variable('daos_backend_interface') and 'DAOS' in static_plugins
++    nixl_lib_deps += [ daos_backend_interface ]
++endif
++
+ if 'OBJ' in static_plugins
+     nixl_lib_deps += [ obj_backend_interface ]
+ endif
+diff --git a/src/core/nixl_plugin_manager.cpp b/src/core/nixl_plugin_manager.cpp
+index 72c3314..cbef2e3 100644
+--- a/src/core/nixl_plugin_manager.cpp
++++ b/src/core/nixl_plugin_manager.cpp
+@@ -864,6 +864,10 @@ void nixlPluginManager::registerBuiltinPlugins() {
+     NIXL_REGISTER_STATIC_PLUGIN(Backend, INFINIA)
+ #endif
+ 
++#ifdef STATIC_PLUGIN_DAOS
++    NIXL_REGISTER_STATIC_PLUGIN(Backend, DAOS)
++#endif
++
+     NIXL_REGISTER_STATIC_PLUGIN(Telemetry, BUFFER)
+     NIXL_REGISTER_STATIC_PLUGIN(Telemetry, NOP)
+ }
 diff --git a/src/plugins/meson.build b/src/plugins/meson.build
 index bee09bd..052cdfa 100644
 --- a/src/plugins/meson.build

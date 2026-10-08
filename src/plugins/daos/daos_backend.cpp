@@ -1,4 +1,5 @@
 /*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -16,12 +17,12 @@
  */
 #include "daos_backend.h"
 
-#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <vector>
 
+#include "common/configuration.h"
 #include "common/nixl_log.h"
 
 namespace {
@@ -82,6 +83,23 @@ parseTarget(const std::string &meta, daosTarget &out) {
     return true;
 }
 
+/*
+ * A numeric setting from the NIXL configuration (environment variable or config
+ * file). A value that does not parse is reported and replaced by the default
+ * rather than failing the backend.
+ */
+template<typename T>
+T
+configValue(const char *key, T fallback) {
+    try {
+        return nixl::config::getValueDefaulted<T>(key, fallback);
+    }
+    catch (const std::exception &e) {
+        NIXL_WARN << key << " ignored (" << e.what() << ")";
+        return fallback;
+    }
+}
+
 } // namespace
 
 nixlDaosThreadPool::nixlDaosThreadPool(unsigned n) {
@@ -127,6 +145,15 @@ nixlDaosThreadPool::submit(std::function<void()> job) {
     cv_.notify_one();
 }
 
+nixl_mem_list_t
+nixlDaosEngine::supportedMems() {
+#ifdef NIXL_DAOS_HAVE_GPU
+    return {FILE_SEG, DRAM_SEG, VRAM_SEG};
+#else
+    return {FILE_SEG, DRAM_SEG};
+#endif
+}
+
 nixl_b_params_t
 nixlDaosEngine::getPluginParams() {
     /* Nothing yet. "pool" and "container" will land here so a deployment can
@@ -146,7 +173,12 @@ nixlDaosEngine::nixlDaosEngine(const nixlBackendInitParams *init_params)
     if (rc == 0) {
         daosInited_ = true;
     } else if (rc != -DER_ALREADY) {
+        /* Without the client library nothing below can work; report it so the
+         * agent refuses this backend instead of handing out one that fails on
+         * every call. The destructor copes with the members left unset. */
         NIXL_ERROR << "daos_init() failed: " << rc;
+        initErr = true;
+        return;
     }
 
     /* 64 is where the concurrency ladder flattens on the testbed: at 400G
@@ -155,13 +187,11 @@ nixlDaosEngine::nixlDaosEngine(const nixlBackendInitParams *init_params)
      * requests in flight), so a caller that keeps fewer requests outstanding
      * is capped by its own depth rather than by this number. */
     unsigned nthreads = 64;
-    if (const char *env = std::getenv("NIXL_DAOS_THREADS")) {
-        const int v = std::atoi(env);
-        if (v > 0 && v <= 512) {
-            nthreads = static_cast<unsigned>(v);
-        } else {
-            NIXL_WARN << "NIXL_DAOS_THREADS=" << env << " ignored (expected 1..512)";
-        }
+    const long v = configValue<long>("NIXL_DAOS_THREADS", nthreads);
+    if (v > 0 && v <= 512) {
+        nthreads = static_cast<unsigned>(v);
+    } else {
+        NIXL_WARN << "NIXL_DAOS_THREADS=" << v << " ignored (expected 1..512)";
     }
     pool_ = std::make_unique<nixlDaosThreadPool>(nthreads);
     NIXL_DEBUG << "DAOS backend: " << nthreads << " IO threads";
@@ -328,12 +358,12 @@ nixlDaosEngine::deregisterMem(nixlBackendMD *meta) {
 
     std::lock_guard<std::mutex> g(mtx_);
 
-    const int rc = daos_obj_close(md->oh_, nullptr);
+    const int rc = daos_obj_close(md->oh, nullptr);
     if (rc != 0) {
         NIXL_ERROR << "daos_obj_close failed: " << rc;
     }
 
-    putCont(md->pool_, md->cont_);
+    putCont(md->pool, md->cont);
     delete md;
 
     return rc == 0 ? NIXL_SUCCESS : NIXL_ERR_BACKEND;
@@ -368,6 +398,18 @@ nixlDaosEngine::prepXfer(const nixl_xfer_op_t &operation,
         return NIXL_ERR_INVALID_PARAM;
     }
 
+    /* The local side is the memory buffer and the remote side the DAOS object;
+     * the other way round, an object offset would be used as a pointer. */
+    const nixl_mem_t local_type = local.getType();
+    bool local_ok = local_type == DRAM_SEG;
+#ifdef NIXL_DAOS_HAVE_GPU
+    local_ok = local_ok || local_type == VRAM_SEG;
+#endif
+    if (!local_ok || remote.getType() != FILE_SEG) {
+        NIXL_ERROR << "DAOS: expected a memory local list and a FILE_SEG remote list";
+        return NIXL_ERR_INVALID_PARAM;
+    }
+
     /* First pass: bucket by (object handle, dkey) without touching the DAOS
      * structures, so the vectors can be sized exactly before any pointer into
      * them is taken. */
@@ -397,8 +439,8 @@ nixlDaosEngine::prepXfer(const nixl_xfer_op_t &operation,
 
         const uint64_t dkey = ri->addr / dkeySpan_;
         const uint64_t akey = ri->addr % dkeySpan_;
-        auto &slot = buckets[{md->devId_, dkey}];
-        slot.first = md->oh_;
+        auto &slot = buckets[{md->devId, dkey}];
+        slot.first = md->oh;
         slot.second.push_back({akey, ri->len, reinterpret_cast<void *>(li->addr), li->devId});
     }
 
@@ -410,7 +452,7 @@ nixlDaosEngine::prepXfer(const nixl_xfer_op_t &operation,
     /* The descriptor list carries the segment type, so the local side tells us
      * whether these buffers are device memory. devId on a VRAM descriptor is
      * the CUDA ordinal. */
-    const bool localIsGpu = local.getType() == VRAM_SEG;
+    const bool local_is_gpu = local_type == VRAM_SEG;
 #endif
 
     for (auto &kv : buckets) {
@@ -446,7 +488,7 @@ nixlDaosEngine::prepXfer(const nixl_xfer_op_t &operation,
         }
 
 #ifdef NIXL_DAOS_HAVE_GPU
-        if (localIsGpu) {
+        if (local_is_gpu) {
             g.memAttrs.resize(n);
             for (size_t i = 0; i < n; i++) {
                 g.memAttrs[i] = daos_mem_attr_t{};
@@ -467,7 +509,7 @@ nixlDaosEngine::prepXfer(const nixl_xfer_op_t &operation,
 }
 
 /*
- * Optional event-queue path, off by default.
+ * Event-queue path: on by default, NIXL_DAOS_EQ_TIMEOUT=0 turns it off.
  *
  * https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/FAILURE-MODES.md
  * measured why it is wanted:
@@ -505,10 +547,9 @@ namespace {
 
 double
 nixlDaosEqTimeout() {
-    static const double t = [] {
-        const char *e = std::getenv("NIXL_DAOS_EQ_TIMEOUT");
-        return e ? std::atof(e) : 60.0; /* 0 in the environment disables it */
-    }();
+    /* Whole seconds (NIXL's configuration has no floating-point values); 0
+     * disables the deadline and makes every call blocking. */
+    static const double t = static_cast<double>(configValue<long>("NIXL_DAOS_EQ_TIMEOUT", 60));
     return t;
 }
 
@@ -617,49 +658,36 @@ nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
             d_iov_set(&dkey, &gp->dkeyVal, sizeof(uint64_t));
 
             const unsigned nr = static_cast<unsigned>(gp->iods.size());
-            const double eqTimeout = nixlDaosEqTimeout();
+            const double eq_timeout = nixlDaosEqTimeout();
             daos_handle_t eq{};
             daos_event_t ev;
             daos_event_t *evp = nullptr;
-            bool useEq = false;
+            bool use_eq = false;
             int rc;
 
-            if (eqTimeout > 0.0) {
+            if (eq_timeout > 0.0) {
                 /* A queue we could not get is a reason to fall back to the
                  * blocking call, not to fail the transfer: the deadline is an
                  * improvement on the failure path, never a prerequisite for
                  * doing the I/O. */
                 if (eqPool_->borrow(eq)) {
                     if (daos_event_init(&ev, eq, nullptr) == 0) {
-                        useEq = true;
+                        use_eq = true;
                     } else {
                         eqPool_->giveBack(eq);
                     }
                 }
-                if (!useEq) {
+                if (!use_eq) {
                     NIXL_ERROR << "DAOS: no event queue available, "
                                   "falling back to a blocking call";
                 }
             }
-            daos_event_t *evArg = useEq ? &ev : nullptr;
+            daos_event_t *ev_arg = use_eq ? &ev : nullptr;
 #ifdef NIXL_DAOS_HAVE_GPU
             if (!gp->memAttrs.empty()) {
-                /* This once said "synchronous only -- no event queue", and
-                 * used that to justify putting the work on a thread. It was
-                 * wrong. In theodore/b_cufile the GPU entry points take an
-                 * event and hand it to the same task machinery as the host
-                 * ones -- src/client/api/object.c:213 differs from :197 only
-                 * by the GPU_DIRECT flag and args->mem_attrs:
-                 *
-                 *   update      dc_obj_update_task_create(oh, th, flags, ..., ev, ...)
-                 *   update_gpu  dc_obj_update_task_create(oh, th, flags|GPU_DIRECT, ..., ev, ...)
-                 *
-                 * So the nullptr below is a choice, not a constraint, and it
-                 * is currently the wrong one:
-                 * https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/FAILURE-MODES.md
-                 * measured the event queue as the only bounded way out of a dead engine
-                 * (16/16 threads lost blocking, 0/16 with a poll timeout). The VRAM_SEG path can
-                 * have that escape; it just does not yet. */
+                /* The GPU entry points take an event exactly like the host
+                 * ones (they differ only by the GPU_DIRECT flag and the
+                 * memory attributes), so this path gets the same deadline. */
                 rc = req->op == NIXL_READ ? daos_obj_fetch_gpu(gp->oh,
                                                                DAOS_TX_NONE,
                                                                0,
@@ -669,7 +697,7 @@ nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
                                                                gp->sgls.data(),
                                                                gp->memAttrs.data(),
                                                                nullptr,
-                                                               evArg) :
+                                                               ev_arg) :
                                             daos_obj_update_gpu(gp->oh,
                                                                 DAOS_TX_NONE,
                                                                 0,
@@ -678,7 +706,7 @@ nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
                                                                 gp->iods.data(),
                                                                 gp->sgls.data(),
                                                                 gp->memAttrs.data(),
-                                                                evArg);
+                                                                ev_arg);
             } else
 #endif
             {
@@ -690,7 +718,7 @@ nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
                                                            gp->iods.data(),
                                                            gp->sgls.data(),
                                                            nullptr,
-                                                           evArg) :
+                                                           ev_arg) :
                                             daos_obj_update(gp->oh,
                                                             DAOS_TX_NONE,
                                                             0,
@@ -698,10 +726,10 @@ nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
                                                             nr,
                                                             gp->iods.data(),
                                                             gp->sgls.data(),
-                                                            evArg);
+                                                            ev_arg);
             }
 
-            if (useEq) {
+            if (use_eq) {
                 if (rc == 0) {
                     /* Timeout is in microseconds. n == 0 means the deadline
                      * passed with the RPC still outstanding -- the thread is
@@ -710,9 +738,9 @@ nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
                      * that is about to go away. Both calls measured at 0.00 s
                      * against a dead engine. */
                     const int n =
-                        daos_eq_poll(eq, 1, static_cast<int64_t>(eqTimeout * 1e6), 1, &evp);
+                        daos_eq_poll(eq, 1, static_cast<int64_t>(eq_timeout * 1e6), 1, &evp);
                     if (n == 0) {
-                        NIXL_ERROR << "DAOS: no completion in " << eqTimeout
+                        NIXL_ERROR << "DAOS: no completion in " << eq_timeout
                                    << "s, abandoning the request";
                         daos_event_abort(&ev);
                         rc = -DER_TIMEDOUT;

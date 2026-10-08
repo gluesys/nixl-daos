@@ -1,4 +1,5 @@
 <!--
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
 SPDX-License-Identifier: Apache-2.0
 
@@ -68,7 +69,7 @@ meson setup build -Ddaos_path=/opt/daos
 meson setup build -Denable_plugins=DAOS
 
 # Never build it
-meson setup build -Ddisable_daos_backend=true
+meson setup build -Ddisable_plugins=DAOS
 ```
 
 The plugin library is `libplugin_DAOS.so` under the NIXL plugin directory.
@@ -103,10 +104,13 @@ into a single RPC; separate spans spread across targets. On the same 4.69 GiB,
 
 ### Configuration
 
-| environment variable | default | effect |
+| setting | default | effect |
 |---|---|---|
 | `NIXL_DAOS_THREADS` | 64 | size of the worker pool (1..512). Throughput flattens at 64 on 400G verbs |
-| `NIXL_DAOS_EQ_TIMEOUT` | 60 | seconds a request may wait on a DAOS event queue before it fails; `0` blocks |
+| `NIXL_DAOS_EQ_TIMEOUT` | 60 | whole seconds a request may wait on a DAOS event queue before it fails; `0` blocks |
+
+Both are read through NIXL's configuration, so they can be set as environment
+variables or in the NIXL configuration file.
 
 The event-queue deadline exists because a blocking DAOS call whose engine has
 died does not return. With `daos_server` killed mid-read, the blocking path was

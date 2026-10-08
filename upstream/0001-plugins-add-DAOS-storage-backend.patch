@@ -1,4 +1,4 @@
-From d2fb78dce7f8d680ab5d8373c966bb9b852ba6a5 Mon Sep 17 00:00:00 2001
+From 900ec46e6c2447838348408eb90a7e248308c438 Mon Sep 17 00:00:00 2001
 From: Kyeongpyo Kim <hgichon@gmail.com>
 Date: Wed, 7 Oct 2026 22:53:41 +0900
 Subject: [PATCH] plugins: add DAOS storage backend
@@ -15,33 +15,41 @@ object against 0.63 ms for DFS.
   offsets map to dkey = addr / 64 MiB, akey = addr % 64 MiB.
 - Work runs on a fixed pool (NIXL_DAOS_THREADS); each request borrows a
   DAOS event queue and polls it with a deadline (NIXL_DAOS_EQ_TIMEOUT) so
-  a dead engine cannot hang a request.
+  a dead engine cannot hang a request. Both settings are read through
+  nixl::config.
 - VRAM_SEG is advertised only when the DAOS client exports
   daos_obj_fetch_gpu().
-- Build follows INFINIA: -Ddisable_daos_backend, -Ddaos_path; skipped with
-  a warning when the DAOS client is absent, an error when requested.
+- Build: -Ddaos_path points at the DAOS client; skipped with a warning
+  when it is absent, an error when requested explicitly. Static builds
+  (-Dstatic_plugins=DAOS) are registered in src/core.
 - Tests in test/unit/plugins/daos need a live pool and are built but not
   registered with meson test.
 
-Measured with DAOS 2.8, 2 ranks, 400G verbs: 34.17 GB/s reading 4.69 GiB.
+Tested against a DAOS 2.8.0 server (1 rank, ofi+tcp): the three tests
+pass. Built on Ubuntu 24.04 against a DAOS 2.8.0 client built from source.
+Throughput, measured with the same backend code on an earlier NIXL and a
+DAOS 2.9.100 development build, 2 ranks, 400G verbs: 34.17 GB/s reading
+4.69 GiB.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Signed-off-by: Kyeongpyo Kim <hgichon@gmail.com>
 ---
  meson.build                           |   2 +-
- meson_options.txt                     |   2 +
- src/plugins/daos/README.md            | 194 +++++++
- src/plugins/daos/daos_backend.cpp     | 787 ++++++++++++++++++++++++++
- src/plugins/daos/daos_backend.h       | 344 +++++++++++
- src/plugins/daos/daos_plugin.cpp      |  43 ++
- src/plugins/daos/meson.build          |  89 +++
+ meson_options.txt                     |   1 +
+ src/core/meson.build                  |   4 +
+ src/core/nixl_plugin_manager.cpp      |   4 +
+ src/plugins/daos/README.md            | 198 +++++++
+ src/plugins/daos/daos_backend.cpp     | 815 ++++++++++++++++++++++++++
+ src/plugins/daos/daos_backend.h       | 348 +++++++++++
+ src/plugins/daos/daos_plugin.cpp      |  50 ++
+ src/plugins/daos/meson.build          |  83 +++
  src/plugins/meson.build               |   5 +
- test/unit/plugins/daos/meson.build    |  31 +
- test/unit/plugins/daos/test_agent.cpp | 186 ++++++
- test/unit/plugins/daos/test_reg.cpp   | 107 ++++
- test/unit/plugins/daos/test_xfer.cpp  | 182 ++++++
+ test/unit/plugins/daos/meson.build    |  32 +
+ test/unit/plugins/daos/test_agent.cpp | 187 ++++++
+ test/unit/plugins/daos/test_reg.cpp   | 108 ++++
+ test/unit/plugins/daos/test_xfer.cpp  | 183 ++++++
  test/unit/plugins/meson.build         |   4 +
- 13 files changed, 1975 insertions(+), 1 deletion(-)
+ 15 files changed, 2023 insertions(+), 1 deletion(-)
  create mode 100644 src/plugins/daos/README.md
  create mode 100644 src/plugins/daos/daos_backend.cpp
  create mode 100644 src/plugins/daos/daos_backend.h
@@ -66,25 +74,55 @@ index ad264ca..c4b37f4 100644
  enabled_plugins = {}
  
 diff --git a/meson_options.txt b/meson_options.txt
-index 791a532..686a723 100644
+index 791a532..3cccfc2 100644
 --- a/meson_options.txt
 +++ b/meson_options.txt
-@@ -21,6 +21,8 @@ option('disable_gds_backend', type : 'boolean', value : false, description : 'di
+@@ -21,6 +21,7 @@ option('disable_gds_backend', type : 'boolean', value : false, description : 'di
  option('disable_mooncake_backend', type : 'boolean', value : false, description : 'disable mooncake backend')
  option('disable_infinia_backend', type : 'boolean', value : false, description : 'disable infinia backend')
  option('infinia_path', type: 'string', value: '/opt/ddn/red/', description: 'Path to Infinia client install')
-+option('disable_daos_backend', type : 'boolean', value : false, description : 'disable DAOS backend')
 +option('daos_path', type: 'string', value: '', description: 'Path to a DAOS client install (include/ and lib64/); empty searches the default paths')
  option('install_headers', type : 'boolean', value : true, description : 'install headers')
  option('gds_path', type: 'string', value: '/usr/local/cuda/', description: 'Path to GDS CuFile install')
  option('cudapath_inc', type: 'string', value: '', description: 'Include path for CUDA')
+diff --git a/src/core/meson.build b/src/core/meson.build
+index e0dd563..e410d11 100644
+--- a/src/core/meson.build
++++ b/src/core/meson.build
+@@ -37,6 +37,10 @@ if is_variable('infinia_backend_interface') and 'INFINIA' in static_plugins
+     nixl_lib_deps += [ infinia_backend_interface ]
+ endif
+ 
++if is_variable('daos_backend_interface') and 'DAOS' in static_plugins
++    nixl_lib_deps += [ daos_backend_interface ]
++endif
++
+ if 'OBJ' in static_plugins
+     nixl_lib_deps += [ obj_backend_interface ]
+ endif
+diff --git a/src/core/nixl_plugin_manager.cpp b/src/core/nixl_plugin_manager.cpp
+index 72c3314..cbef2e3 100644
+--- a/src/core/nixl_plugin_manager.cpp
++++ b/src/core/nixl_plugin_manager.cpp
+@@ -864,6 +864,10 @@ void nixlPluginManager::registerBuiltinPlugins() {
+     NIXL_REGISTER_STATIC_PLUGIN(Backend, INFINIA)
+ #endif
+ 
++#ifdef STATIC_PLUGIN_DAOS
++    NIXL_REGISTER_STATIC_PLUGIN(Backend, DAOS)
++#endif
++
+     NIXL_REGISTER_STATIC_PLUGIN(Telemetry, BUFFER)
+     NIXL_REGISTER_STATIC_PLUGIN(Telemetry, NOP)
+ }
 diff --git a/src/plugins/daos/README.md b/src/plugins/daos/README.md
 new file mode 100644
-index 0000000..afe2e28
+index 0000000..ef66897
 --- /dev/null
 +++ b/src/plugins/daos/README.md
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,198 @@
 +<!--
++SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 +SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
 +SPDX-License-Identifier: Apache-2.0
 +
@@ -154,7 +192,7 @@ index 0000000..afe2e28
 +meson setup build -Denable_plugins=DAOS
 +
 +# Never build it
-+meson setup build -Ddisable_daos_backend=true
++meson setup build -Ddisable_plugins=DAOS
 +```
 +
 +The plugin library is `libplugin_DAOS.so` under the NIXL plugin directory.
@@ -189,10 +227,13 @@ index 0000000..afe2e28
 +
 +### Configuration
 +
-+| environment variable | default | effect |
++| setting | default | effect |
 +|---|---|---|
 +| `NIXL_DAOS_THREADS` | 64 | size of the worker pool (1..512). Throughput flattens at 64 on 400G verbs |
-+| `NIXL_DAOS_EQ_TIMEOUT` | 60 | seconds a request may wait on a DAOS event queue before it fails; `0` blocks |
++| `NIXL_DAOS_EQ_TIMEOUT` | 60 | whole seconds a request may wait on a DAOS event queue before it fails; `0` blocks |
++
++Both are read through NIXL's configuration, so they can be set as environment
++variables or in the NIXL configuration file.
 +
 +The event-queue deadline exists because a blocking DAOS call whose engine has
 +died does not return. With `daos_server` killed mid-read, the blocking path was
@@ -280,11 +321,12 @@ index 0000000..afe2e28
 +[vram]: https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/NIXL-DAOS-VRAM.md
 diff --git a/src/plugins/daos/daos_backend.cpp b/src/plugins/daos/daos_backend.cpp
 new file mode 100644
-index 0000000..808e6ea
+index 0000000..4aab423
 --- /dev/null
 +++ b/src/plugins/daos/daos_backend.cpp
-@@ -0,0 +1,787 @@
+@@ -0,0 +1,815 @@
 +/*
++ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 + * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
 + * SPDX-License-Identifier: Apache-2.0
 + *
@@ -302,12 +344,12 @@ index 0000000..808e6ea
 + */
 +#include "daos_backend.h"
 +
-+#include <cstdlib>
 +#include <memory>
 +#include <mutex>
 +#include <sstream>
 +#include <vector>
 +
++#include "common/configuration.h"
 +#include "common/nixl_log.h"
 +
 +namespace {
@@ -368,6 +410,23 @@ index 0000000..808e6ea
 +    return true;
 +}
 +
++/*
++ * A numeric setting from the NIXL configuration (environment variable or config
++ * file). A value that does not parse is reported and replaced by the default
++ * rather than failing the backend.
++ */
++template<typename T>
++T
++configValue(const char *key, T fallback) {
++    try {
++        return nixl::config::getValueDefaulted<T>(key, fallback);
++    }
++    catch (const std::exception &e) {
++        NIXL_WARN << key << " ignored (" << e.what() << ")";
++        return fallback;
++    }
++}
++
 +} // namespace
 +
 +nixlDaosThreadPool::nixlDaosThreadPool(unsigned n) {
@@ -413,6 +472,15 @@ index 0000000..808e6ea
 +    cv_.notify_one();
 +}
 +
++nixl_mem_list_t
++nixlDaosEngine::supportedMems() {
++#ifdef NIXL_DAOS_HAVE_GPU
++    return {FILE_SEG, DRAM_SEG, VRAM_SEG};
++#else
++    return {FILE_SEG, DRAM_SEG};
++#endif
++}
++
 +nixl_b_params_t
 +nixlDaosEngine::getPluginParams() {
 +    /* Nothing yet. "pool" and "container" will land here so a deployment can
@@ -432,7 +500,12 @@ index 0000000..808e6ea
 +    if (rc == 0) {
 +        daosInited_ = true;
 +    } else if (rc != -DER_ALREADY) {
++        /* Without the client library nothing below can work; report it so the
++         * agent refuses this backend instead of handing out one that fails on
++         * every call. The destructor copes with the members left unset. */
 +        NIXL_ERROR << "daos_init() failed: " << rc;
++        initErr = true;
++        return;
 +    }
 +
 +    /* 64 is where the concurrency ladder flattens on the testbed: at 400G
@@ -441,13 +514,11 @@ index 0000000..808e6ea
 +     * requests in flight), so a caller that keeps fewer requests outstanding
 +     * is capped by its own depth rather than by this number. */
 +    unsigned nthreads = 64;
-+    if (const char *env = std::getenv("NIXL_DAOS_THREADS")) {
-+        const int v = std::atoi(env);
-+        if (v > 0 && v <= 512) {
-+            nthreads = static_cast<unsigned>(v);
-+        } else {
-+            NIXL_WARN << "NIXL_DAOS_THREADS=" << env << " ignored (expected 1..512)";
-+        }
++    const long v = configValue<long>("NIXL_DAOS_THREADS", nthreads);
++    if (v > 0 && v <= 512) {
++        nthreads = static_cast<unsigned>(v);
++    } else {
++        NIXL_WARN << "NIXL_DAOS_THREADS=" << v << " ignored (expected 1..512)";
 +    }
 +    pool_ = std::make_unique<nixlDaosThreadPool>(nthreads);
 +    NIXL_DEBUG << "DAOS backend: " << nthreads << " IO threads";
@@ -614,12 +685,12 @@ index 0000000..808e6ea
 +
 +    std::lock_guard<std::mutex> g(mtx_);
 +
-+    const int rc = daos_obj_close(md->oh_, nullptr);
++    const int rc = daos_obj_close(md->oh, nullptr);
 +    if (rc != 0) {
 +        NIXL_ERROR << "daos_obj_close failed: " << rc;
 +    }
 +
-+    putCont(md->pool_, md->cont_);
++    putCont(md->pool, md->cont);
 +    delete md;
 +
 +    return rc == 0 ? NIXL_SUCCESS : NIXL_ERR_BACKEND;
@@ -654,6 +725,18 @@ index 0000000..808e6ea
 +        return NIXL_ERR_INVALID_PARAM;
 +    }
 +
++    /* The local side is the memory buffer and the remote side the DAOS object;
++     * the other way round, an object offset would be used as a pointer. */
++    const nixl_mem_t local_type = local.getType();
++    bool local_ok = local_type == DRAM_SEG;
++#ifdef NIXL_DAOS_HAVE_GPU
++    local_ok = local_ok || local_type == VRAM_SEG;
++#endif
++    if (!local_ok || remote.getType() != FILE_SEG) {
++        NIXL_ERROR << "DAOS: expected a memory local list and a FILE_SEG remote list";
++        return NIXL_ERR_INVALID_PARAM;
++    }
++
 +    /* First pass: bucket by (object handle, dkey) without touching the DAOS
 +     * structures, so the vectors can be sized exactly before any pointer into
 +     * them is taken. */
@@ -683,8 +766,8 @@ index 0000000..808e6ea
 +
 +        const uint64_t dkey = ri->addr / dkeySpan_;
 +        const uint64_t akey = ri->addr % dkeySpan_;
-+        auto &slot = buckets[{md->devId_, dkey}];
-+        slot.first = md->oh_;
++        auto &slot = buckets[{md->devId, dkey}];
++        slot.first = md->oh;
 +        slot.second.push_back({akey, ri->len, reinterpret_cast<void *>(li->addr), li->devId});
 +    }
 +
@@ -696,7 +779,7 @@ index 0000000..808e6ea
 +    /* The descriptor list carries the segment type, so the local side tells us
 +     * whether these buffers are device memory. devId on a VRAM descriptor is
 +     * the CUDA ordinal. */
-+    const bool localIsGpu = local.getType() == VRAM_SEG;
++    const bool local_is_gpu = local_type == VRAM_SEG;
 +#endif
 +
 +    for (auto &kv : buckets) {
@@ -732,7 +815,7 @@ index 0000000..808e6ea
 +        }
 +
 +#ifdef NIXL_DAOS_HAVE_GPU
-+        if (localIsGpu) {
++        if (local_is_gpu) {
 +            g.memAttrs.resize(n);
 +            for (size_t i = 0; i < n; i++) {
 +                g.memAttrs[i] = daos_mem_attr_t{};
@@ -753,7 +836,7 @@ index 0000000..808e6ea
 +}
 +
 +/*
-+ * Optional event-queue path, off by default.
++ * Event-queue path: on by default, NIXL_DAOS_EQ_TIMEOUT=0 turns it off.
 + *
 + * https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/FAILURE-MODES.md
 + * measured why it is wanted:
@@ -791,10 +874,9 @@ index 0000000..808e6ea
 +
 +double
 +nixlDaosEqTimeout() {
-+    static const double t = [] {
-+        const char *e = std::getenv("NIXL_DAOS_EQ_TIMEOUT");
-+        return e ? std::atof(e) : 60.0; /* 0 in the environment disables it */
-+    }();
++    /* Whole seconds (NIXL's configuration has no floating-point values); 0
++     * disables the deadline and makes every call blocking. */
++    static const double t = static_cast<double>(configValue<long>("NIXL_DAOS_EQ_TIMEOUT", 60));
 +    return t;
 +}
 +
@@ -903,49 +985,36 @@ index 0000000..808e6ea
 +            d_iov_set(&dkey, &gp->dkeyVal, sizeof(uint64_t));
 +
 +            const unsigned nr = static_cast<unsigned>(gp->iods.size());
-+            const double eqTimeout = nixlDaosEqTimeout();
++            const double eq_timeout = nixlDaosEqTimeout();
 +            daos_handle_t eq{};
 +            daos_event_t ev;
 +            daos_event_t *evp = nullptr;
-+            bool useEq = false;
++            bool use_eq = false;
 +            int rc;
 +
-+            if (eqTimeout > 0.0) {
++            if (eq_timeout > 0.0) {
 +                /* A queue we could not get is a reason to fall back to the
 +                 * blocking call, not to fail the transfer: the deadline is an
 +                 * improvement on the failure path, never a prerequisite for
 +                 * doing the I/O. */
 +                if (eqPool_->borrow(eq)) {
 +                    if (daos_event_init(&ev, eq, nullptr) == 0) {
-+                        useEq = true;
++                        use_eq = true;
 +                    } else {
 +                        eqPool_->giveBack(eq);
 +                    }
 +                }
-+                if (!useEq) {
++                if (!use_eq) {
 +                    NIXL_ERROR << "DAOS: no event queue available, "
 +                                  "falling back to a blocking call";
 +                }
 +            }
-+            daos_event_t *evArg = useEq ? &ev : nullptr;
++            daos_event_t *ev_arg = use_eq ? &ev : nullptr;
 +#ifdef NIXL_DAOS_HAVE_GPU
 +            if (!gp->memAttrs.empty()) {
-+                /* This once said "synchronous only -- no event queue", and
-+                 * used that to justify putting the work on a thread. It was
-+                 * wrong. In theodore/b_cufile the GPU entry points take an
-+                 * event and hand it to the same task machinery as the host
-+                 * ones -- src/client/api/object.c:213 differs from :197 only
-+                 * by the GPU_DIRECT flag and args->mem_attrs:
-+                 *
-+                 *   update      dc_obj_update_task_create(oh, th, flags, ..., ev, ...)
-+                 *   update_gpu  dc_obj_update_task_create(oh, th, flags|GPU_DIRECT, ..., ev, ...)
-+                 *
-+                 * So the nullptr below is a choice, not a constraint, and it
-+                 * is currently the wrong one:
-+                 * https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/FAILURE-MODES.md
-+                 * measured the event queue as the only bounded way out of a dead engine
-+                 * (16/16 threads lost blocking, 0/16 with a poll timeout). The VRAM_SEG path can
-+                 * have that escape; it just does not yet. */
++                /* The GPU entry points take an event exactly like the host
++                 * ones (they differ only by the GPU_DIRECT flag and the
++                 * memory attributes), so this path gets the same deadline. */
 +                rc = req->op == NIXL_READ ? daos_obj_fetch_gpu(gp->oh,
 +                                                               DAOS_TX_NONE,
 +                                                               0,
@@ -955,7 +1024,7 @@ index 0000000..808e6ea
 +                                                               gp->sgls.data(),
 +                                                               gp->memAttrs.data(),
 +                                                               nullptr,
-+                                                               evArg) :
++                                                               ev_arg) :
 +                                            daos_obj_update_gpu(gp->oh,
 +                                                                DAOS_TX_NONE,
 +                                                                0,
@@ -964,7 +1033,7 @@ index 0000000..808e6ea
 +                                                                gp->iods.data(),
 +                                                                gp->sgls.data(),
 +                                                                gp->memAttrs.data(),
-+                                                                evArg);
++                                                                ev_arg);
 +            } else
 +#endif
 +            {
@@ -976,7 +1045,7 @@ index 0000000..808e6ea
 +                                                           gp->iods.data(),
 +                                                           gp->sgls.data(),
 +                                                           nullptr,
-+                                                           evArg) :
++                                                           ev_arg) :
 +                                            daos_obj_update(gp->oh,
 +                                                            DAOS_TX_NONE,
 +                                                            0,
@@ -984,10 +1053,10 @@ index 0000000..808e6ea
 +                                                            nr,
 +                                                            gp->iods.data(),
 +                                                            gp->sgls.data(),
-+                                                            evArg);
++                                                            ev_arg);
 +            }
 +
-+            if (useEq) {
++            if (use_eq) {
 +                if (rc == 0) {
 +                    /* Timeout is in microseconds. n == 0 means the deadline
 +                     * passed with the RPC still outstanding -- the thread is
@@ -996,9 +1065,9 @@ index 0000000..808e6ea
 +                     * that is about to go away. Both calls measured at 0.00 s
 +                     * against a dead engine. */
 +                    const int n =
-+                        daos_eq_poll(eq, 1, static_cast<int64_t>(eqTimeout * 1e6), 1, &evp);
++                        daos_eq_poll(eq, 1, static_cast<int64_t>(eq_timeout * 1e6), 1, &evp);
 +                    if (n == 0) {
-+                        NIXL_ERROR << "DAOS: no completion in " << eqTimeout
++                        NIXL_ERROR << "DAOS: no completion in " << eq_timeout
 +                                   << "s, abandoning the request";
 +                        daos_event_abort(&ev);
 +                        rc = -DER_TIMEDOUT;
@@ -1073,11 +1142,12 @@ index 0000000..808e6ea
 +}
 diff --git a/src/plugins/daos/daos_backend.h b/src/plugins/daos/daos_backend.h
 new file mode 100644
-index 0000000..2c20cec
+index 0000000..d16382b
 --- /dev/null
 +++ b/src/plugins/daos/daos_backend.h
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,348 @@
 +/*
++ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 + * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
 + * SPDX-License-Identifier: Apache-2.0
 + *
@@ -1154,19 +1224,19 @@ index 0000000..2c20cec
 +                  daos_obj_id_t oid,
 +                  uint64_t dev_id)
 +        : nixlBackendMD(true),
-+          pool_(pool),
-+          cont_(cont),
-+          oh_(oh),
-+          oid_(oid),
-+          devId_(dev_id) {}
++          pool(pool),
++          cont(cont),
++          oh(oh),
++          oid(oid),
++          devId(dev_id) {}
 +
 +    ~nixlDaosObjMD() override = default;
 +
-+    std::string pool_;
-+    std::string cont_;
-+    daos_handle_t oh_;
-+    daos_obj_id_t oid_;
-+    uint64_t devId_;
++    std::string pool;
++    std::string cont;
++    daos_handle_t oh;
++    daos_obj_id_t oid;
++    uint64_t devId;
 +};
 +
 +/*
@@ -1174,7 +1244,9 @@ index 0000000..2c20cec
 + * become one daos_obj_fetch()/daos_obj_update() call. The vectors own the
 + * memory that the DAOS structures point into, so they are sized once in
 + * prepXfer() and never grown afterwards -- a reallocation here would leave
-+ * iod_recxs and sg_iovs dangling.
++ * iod_recxs and sg_iovs dangling. They are parallel vectors rather than one
++ * vector of structs because daos_obj_fetch() takes the iods and the sgls as two
++ * separate contiguous arrays.
 + */
 +struct nixlDaosIoGroup {
 +    daos_handle_t oh{};
@@ -1201,9 +1273,9 @@ index 0000000..2c20cec
 + * folded. Folding hid the cost because it left only 120 requests; nothing
 + * guarantees a real workload folds that well, so the threads had to go.
 + *
-+ * Blocking DAOS calls on a pool, rather than a DAOS event queue: the event
-+ * path serialises on the per-EQ eqx_lock and has been measured to cap around
-+ * 7-12 GB/s however the queues are arranged.
++ * Each thread issues one DAOS call at a time and waits for it, on an event
++ * queue with a deadline unless NIXL_DAOS_EQ_TIMEOUT is 0 (see daos_backend.cpp
++ * for the measurements behind that default).
 + */
 +class nixlDaosThreadPool {
 +public:
@@ -1248,15 +1320,15 @@ index 0000000..2c20cec
 +            /* Taking the lock before notifying is what makes waitDone() safe:
 +             * a waiter that has already evaluated the predicate is inside
 +             * wait() holding nothing, and this hands off cleanly. */
-+            std::lock_guard<std::mutex> g(doneMtx);
-+            doneCv.notify_all();
++            std::lock_guard<std::mutex> g(doneMtx_);
++            doneCv_.notify_all();
 +        }
 +    }
 +
 +    void
 +    waitDone() {
-+        std::unique_lock<std::mutex> g(doneMtx);
-+        doneCv.wait(g, [this] { return pending.load() == 0; });
++        std::unique_lock<std::mutex> g(doneMtx_);
++        doneCv_.wait(g, [this] { return pending.load() == 0; });
 +    }
 +
 +    void
@@ -1266,14 +1338,19 @@ index 0000000..2c20cec
 +    }
 +
 +private:
-+    std::mutex doneMtx;
-+    std::condition_variable doneCv;
++    std::mutex doneMtx_;
++    std::condition_variable doneCv_;
 +};
 +
 +class nixlDaosEngine : public nixlBackendEngine {
 +public:
-+    static nixl_b_params_t
++    [[nodiscard]] static nixl_b_params_t
 +    getPluginParams();
++
++    /* The segments this backend serves; the plugin declaration and
++     * getSupportedMems() both use it so they cannot disagree. */
++    [[nodiscard]] static nixl_mem_list_t
++    supportedMems();
 +
 +    explicit nixlDaosEngine(const nixlBackendInitParams *init_params);
 +    ~nixlDaosEngine() override;
@@ -1289,28 +1366,24 @@ index 0000000..2c20cec
 +     * the library does not have turns a clean "unsupported" into a failure
 +     * further down. meson decides this, not a runtime check.
 +     */
-+    bool
-+    supportsRemote() const override {
++    [[nodiscard]] bool
++    supportsRemote() const noexcept override {
 +        return false;
 +    }
 +
-+    bool
-+    supportsLocal() const override {
++    [[nodiscard]] bool
++    supportsLocal() const noexcept override {
 +        return true;
 +    }
 +
-+    bool
-+    supportsNotif() const override {
++    [[nodiscard]] bool
++    supportsNotif() const noexcept override {
 +        return false;
 +    }
 +
-+    nixl_mem_list_t
++    [[nodiscard]] nixl_mem_list_t
 +    getSupportedMems() const override {
-+#ifdef NIXL_DAOS_HAVE_GPU
-+        return {FILE_SEG, DRAM_SEG, VRAM_SEG};
-+#else
-+        return {FILE_SEG, DRAM_SEG};
-+#endif
++        return supportedMems();
 +    }
 +
 +    /* ---- lifecycle no-ops (final) ---------------------------------------
@@ -1404,9 +1477,9 @@ index 0000000..2c20cec
 +     * https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/NIXL-DAOS-MEASUREMENT.md. */
 +    mutable std::unique_ptr<nixlDaosThreadPool> pool_;
 +
-+    /* Event queues, borrowed per request. Only used when NIXL_DAOS_EQ_TIMEOUT
-+     * is set; see daos_backend.cpp for why it is a borrow pool and not one
-+     * queue per thread. */
++    /* Event queues, borrowed per request. Used unless NIXL_DAOS_EQ_TIMEOUT is
++     * 0; see daos_backend.cpp for why it is a borrow pool and not one queue per
++     * thread. */
 +    /* unique_ptr so the class itself can stay in the .cpp with the
 +     * measurements that explain it; the destructor is defined there, which is
 +     * where the complete type is needed. */
@@ -1423,11 +1496,12 @@ index 0000000..2c20cec
 +#endif // NIXL_SRC_PLUGINS_DAOS_DAOS_BACKEND_H
 diff --git a/src/plugins/daos/daos_plugin.cpp b/src/plugins/daos/daos_plugin.cpp
 new file mode 100644
-index 0000000..4bfded7
+index 0000000..844becf
 --- /dev/null
 +++ b/src/plugins/daos/daos_plugin.cpp
-@@ -0,0 +1,43 @@
+@@ -0,0 +1,50 @@
 +/*
++ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 + * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
 + * SPDX-License-Identifier: Apache-2.0
 + *
@@ -1457,14 +1531,20 @@ index 0000000..4bfded7
 +#ifdef STATIC_PLUGIN_DAOS
 +nixlBackendPlugin *
 +createStaticDAOSPlugin() {
-+    return daos_plugin_t::create(
-+        NIXL_PLUGIN_API_VERSION, "DAOS", "0.1.0", daos_plugin_params, {DRAM_SEG, FILE_SEG});
++    return daos_plugin_t::create(NIXL_PLUGIN_API_VERSION,
++                                 "DAOS",
++                                 "0.1.0",
++                                 daos_plugin_params,
++                                 nixlDaosEngine::supportedMems());
 +}
 +#else
 +extern "C" NIXL_PLUGIN_EXPORT nixlBackendPlugin *
 +nixl_plugin_init() {
-+    return daos_plugin_t::create(
-+        NIXL_PLUGIN_API_VERSION, "DAOS", "0.1.0", daos_plugin_params, {DRAM_SEG, FILE_SEG});
++    return daos_plugin_t::create(NIXL_PLUGIN_API_VERSION,
++                                 "DAOS",
++                                 "0.1.0",
++                                 daos_plugin_params,
++                                 nixlDaosEngine::supportedMems());
 +}
 +
 +extern "C" NIXL_PLUGIN_EXPORT void
@@ -1472,10 +1552,11 @@ index 0000000..4bfded7
 +#endif
 diff --git a/src/plugins/daos/meson.build b/src/plugins/daos/meson.build
 new file mode 100644
-index 0000000..637a2e5
+index 0000000..e6f772c
 --- /dev/null
 +++ b/src/plugins/daos/meson.build
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,83 @@
++# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 +# SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
 +# SPDX-License-Identifier: Apache-2.0
 +#
@@ -1490,13 +1571,6 @@ index 0000000..637a2e5
 +# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 +# See the License for the specific language governing permissions and
 +# limitations under the License.
-+
-+if get_option('disable_daos_backend')
-+    if is_explicit_enable or 'DAOS' in static_plugins
-+        error('DAOS plugin requested but the DAOS backend is disabled')
-+    endif
-+    subdir_done()
-+endif
 +
 +fs = import('fs')
 +
@@ -1583,10 +1657,11 @@ index bee09bd..052cdfa 100644
  if enabled_plugins.get('GUSLI')
 diff --git a/test/unit/plugins/daos/meson.build b/test/unit/plugins/daos/meson.build
 new file mode 100644
-index 0000000..c2a79c2
+index 0000000..7ae4924
 --- /dev/null
 +++ b/test/unit/plugins/daos/meson.build
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,32 @@
++# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 +# SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
 +# SPDX-License-Identifier: Apache-2.0
 +#
@@ -1620,11 +1695,12 @@ index 0000000..c2a79c2
 +           install: true)
 diff --git a/test/unit/plugins/daos/test_agent.cpp b/test/unit/plugins/daos/test_agent.cpp
 new file mode 100644
-index 0000000..1b06275
+index 0000000..41b2834
 --- /dev/null
 +++ b/test/unit/plugins/daos/test_agent.cpp
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,187 @@
 +/*
++ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 + * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
 + * SPDX-License-Identifier: Apache-2.0
 + *
@@ -1812,11 +1888,12 @@ index 0000000..1b06275
 +}
 diff --git a/test/unit/plugins/daos/test_reg.cpp b/test/unit/plugins/daos/test_reg.cpp
 new file mode 100644
-index 0000000..bfce1dd
+index 0000000..fd9eb58
 --- /dev/null
 +++ b/test/unit/plugins/daos/test_reg.cpp
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,108 @@
 +/*
++ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 + * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
 + * SPDX-License-Identifier: Apache-2.0
 + *
@@ -1892,9 +1969,9 @@ index 0000000..bfce1dd
 +    if (md1 && md2) {
 +        auto *a = dynamic_cast<nixlDaosObjMD *>(md1);
 +        auto *b = dynamic_cast<nixlDaosObjMD *>(md2);
-+        printf("  oid(1001) = %lu.%lu\n", a->oid_.hi, a->oid_.lo);
-+        printf("  oid(1002) = %lu.%lu\n", b->oid_.hi, b->oid_.lo);
-+        bool distinct = !(a->oid_.hi == b->oid_.hi && a->oid_.lo == b->oid_.lo);
++        printf("  oid(1001) = %lu.%lu\n", a->oid.hi, a->oid.lo);
++        printf("  oid(1002) = %lu.%lu\n", b->oid.hi, b->oid.lo);
++        bool distinct = !(a->oid.hi == b->oid.hi && a->oid.lo == b->oid.lo);
 +        printf("  %-46s %s\n", "distinct devId -> distinct oid", distinct ? "PASS" : "FAIL");
 +        if (!distinct) {
 +            fails++;
@@ -1913,7 +1990,7 @@ index 0000000..bfce1dd
 +    ck("re-register 1001 after container closed", eng.registerMem(o3, FILE_SEG, md3), NIXL_SUCCESS);
 +    if (md3) {
 +        auto *c = dynamic_cast<nixlDaosObjMD *>(md3);
-+        printf("  oid(1001) again = %lu.%lu\n", c->oid_.hi, c->oid_.lo);
++        printf("  oid(1001) again = %lu.%lu\n", c->oid.hi, c->oid.lo);
 +    }
 +    ck("deregister again", eng.deregisterMem(md3), NIXL_SUCCESS);
 +
@@ -1925,11 +2002,12 @@ index 0000000..bfce1dd
 +}
 diff --git a/test/unit/plugins/daos/test_xfer.cpp b/test/unit/plugins/daos/test_xfer.cpp
 new file mode 100644
-index 0000000..82cca54
+index 0000000..269d335
 --- /dev/null
 +++ b/test/unit/plugins/daos/test_xfer.cpp
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,183 @@
 +/*
++ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 + * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
 + * SPDX-License-Identifier: Apache-2.0
 + *
