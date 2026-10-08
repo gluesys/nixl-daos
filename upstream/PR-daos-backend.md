@@ -46,6 +46,10 @@ backend use it directly. Design discussed in #2361.
   `ofi+tcp`, client in a Kubernetes pod with `daos_agent` as a sidecar:
   `nixl_daos_test_xfer` (10/10), `nixl_daos_test_reg` (11/11) and
   `nixl_daos_test_agent` (11/11) pass.
+- Ubuntu 24.04 (NIXL CI base): without DAOS the plugin is skipped with a warning
+  and NIXL builds; with a DAOS v2.8.0 client built from source (a 23 MB data
+  image, like `Dockerfile.infinia-libs`) the plugin and tests build with
+  `--buildtype=debug`, 312/312 targets.
 - Earlier throughput measurement (same backend code, NIXL e77af99, 2 DAOS 2.9.100 ranks, 400G
   verbs): 34.17 GB/s reading 4.69 GiB.
 

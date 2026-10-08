@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build check: NIXL + the DAOS plugin on Ubuntu 24.04, with the DAOS client
+# taken from the daos-libs image (Dockerfile.daos-libs). Same build settings as
+# NIXL CI (.gitlab/build.sh): --buildtype=debug, werror from the project default.
+# Passing -Dwerror=true on the command line instead would also apply it to the
+# abseil subproject, which gcc 13 then fails on.
+#
+# Run from a NIXL source tree that contains the plugin:
+#
+#   docker build -f <this file> \
+#       --build-arg DAOS_LIBS_IMAGE=<registry>/nixl/daos-libs:v2.8.0 .
+
+ARG DAOS_LIBS_IMAGE=localhost/nixl/daos-libs:v2.8.0
+FROM ${DAOS_LIBS_IMAGE} AS daos
+
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential meson ninja-build \
+      pkg-config git cmake ca-certificates python3-dev pybind11-dev libaio-dev liburing-dev uuid-dev \
+      libnuma1 libprotobuf-c1 >/dev/null
+COPY --from=daos /daos/x86_64/ /opt/daos/
+COPY . /nixl
+WORKDIR /nixl
+RUN meson setup build -Ddaos_path=/opt/daos -Denable_plugins=DAOS,POSIX -Dbuild_tests=true \
+      --buildtype=debug
+RUN ninja -C build && \
+    so=$(find build -name 'libplugin_DAOS.so') && test -n "$so" && \
+    ! LD_LIBRARY_PATH=/opt/daos/lib64 ldd "$so" | grep 'not found' && \
+    for t in reg xfer agent; do test -x "$(find build -name nixl_daos_test_$t -type f)"; done

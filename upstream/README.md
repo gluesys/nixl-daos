@@ -10,6 +10,8 @@
 | `apply-integration.sh` | puts this repository's plugin and tests into a NIXL tree and applies `integration.patch`; used by CI (`ci/build.sh`) |
 | `ISSUE-daos-backend.md` | the upstream design-discussion issue. **Posted: [ai-dynamo/nixl#2361](https://github.com/ai-dynamo/nixl/issues/2361) (2026-10-08)** |
 | `PR-daos-backend.md` | draft PR body (upstream template What/Why/How; not posted) |
+| `ci/Dockerfile.daos-libs` | DAOS client headers and libraries for Ubuntu as a small data image, the way upstream's `Dockerfile.infinia-libs` supplies Infinia (answer (a) to question 1 of the issue) |
+| `ci/Dockerfile.ubuntu-check` | builds NIXL + the DAOS plugin and tests on Ubuntu 24.04 from that image, with upstream CI's build settings |
 
 ## Base and verification (2026-10-08)
 
@@ -34,9 +36,19 @@
   (`crt_finalize: cannot finalize, current ctx_num(1)`) and then called
   `daos_eq_destroy()` on a library already shut down. Releasing the queue pool
   first removed the error.
-- Not verified: the "warn and skip" path where no DAOS client is installed;
-  throughput on verbs and multiple ranks with this branch (34.17 GB/s was
-  measured with the same backend code on NIXL e77af99).
+- Ubuntu 24.04 (the NIXL CI base), 2026-10-08:
+  - Without DAOS: default setup warns and skips the plugin, and NIXL builds
+    (283/283); `-Denable_plugins=DAOS` fails with a clear error;
+    `-Ddisable_daos_backend=true` leaves it out silently.
+  - With DAOS v2.8.0 built from source (`ci/Dockerfile.daos-libs`, 23 MB of
+    headers and libraries): `ci/Dockerfile.ubuntu-check` builds
+    `libplugin_DAOS.so` and the three tests, 312/312 targets, every DAOS
+    library resolved. Building the image took three fixes, recorded in its
+    comments: SCons's minimal PATH hides venv tools (meson, uv), and the man
+    page step runs SPDK-linked tools that die with SIGILL on a CPU without AVX2.
+- Not verified: throughput on verbs and multiple ranks with this branch
+  (34.17 GB/s was measured with the same backend code on NIXL e77af99, DAOS
+  2.9.100); running the Ubuntu-built plugin against a DAOS server.
 
 ## Order of submission
 
