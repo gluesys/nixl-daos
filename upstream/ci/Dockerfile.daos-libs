@@ -1,0 +1,87 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+#
+# DAOS client headers and libraries for Ubuntu, baked into a small "data" image,
+# the same way Dockerfile.infinia-libs supplies the Infinia libraries. DAOS
+# publishes packages for EL and SUSE only, so this builds the client from the
+# DAOS source tag with DAOS's own Ubuntu build procedure
+# (utils/scripts/install-ubuntu.sh + scons --build-deps=yes) and keeps only what
+# a NIXL build needs to compile and link the DAOS plugin: daos*.h and libdaos
+# with the shared libraries it resolves to.
+#
+# The DAOS build also builds the server dependencies (SPDK, PMDK); there is no
+# client-only target, so it takes about an hour. Build and push once per DAOS
+# release, not per PR:
+#
+#   docker build --build-arg DAOS_VERSION=v2.8.0 \
+#       -f .ci/dockerfiles/Dockerfile.daos-libs \
+#       -t <registry>/nixl/daos-libs:v2.8.0 .
+#
+# Consumers copy /daos/<arch>/ to a prefix and pass it to meson:
+#
+#   FROM <registry>/nixl/daos-libs:v2.8.0 AS daos
+#   ...
+#   COPY --from=daos /daos/${ARCH}/ /opt/daos/
+#   meson setup build -Ddaos_path=/opt/daos
+#
+# libdaos also needs two Ubuntu runtime libraries that are not copied here:
+# install libnuma1 and libprotobuf-c1 where executables (the DAOS tests) link.
+#
+# Verified 2026-10-08 with DAOS v2.8.0 on Ubuntu 24.04: the image holds 23 MB
+# under /daos/x86_64, and NIXL main built with -Ddaos_path=/opt/daos
+# -Denable_plugins=DAOS,POSIX -Dbuild_tests=true --buildtype=debug produced
+# libplugin_DAOS.so and the three DAOS tests (312/312 targets).
+
+ARG BASE_DISTRO=ubuntu:24.04
+
+FROM ${BASE_DISTRO} AS build
+
+ARG DAOS_VERSION=v2.8.0
+ARG JOBS=8
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git && \
+    git clone --depth 1 --branch "${DAOS_VERSION}" --recurse-submodules --shallow-submodules \
+        https://github.com/daos-stack/daos.git /daos-src
+
+WORKDIR /daos-src
+
+# DAOS's own dependency list for Ubuntu; ruby/fpm are only for packaging.
+RUN apt-get update && \
+    sed -i 's/^sudo gem install fpm$/true/' utils/scripts/install-ubuntu.sh && \
+    utils/scripts/install-ubuntu.sh -y --no-install-recommends && \
+    python3 -m venv /venv && /venv/bin/pip install --no-cache-dir -r requirements-build.txt
+
+# SCons hands the SPDK/DPDK make a minimal environment (SCONS_ENV=minimal), so
+# the venv's meson/ninja are not on its PATH; DPDK also needs pyelftools there.
+RUN apt-get install -y --no-install-recommends meson ninja-build python3-pyelftools
+# The same minimal PATH also hides the venv's other tools (SPDK's python install
+# calls uv). Expose every venv tool the system does not already provide.
+RUN for f in /venv/bin/*; do n=$(basename "$f"); \
+        command -v "$n" >/dev/null 2>&1 || ln -s "$f" /usr/local/bin/"$n"; \
+    done; command -v uv
+
+ENV PATH=/venv/bin:$PATH
+# SPDK is built for CONFIG_ARCH=haswell, and generating the man pages runs the
+# freshly built tools (ddb links SPDK), so on a CPU without AVX2 that step dies
+# with SIGILL. Man pages are not needed here: keep going past it, then require
+# what this image is for.
+RUN scons -k --build-deps=yes --jobs "${JOBS}" PREFIX=/opt/daos \
+        BUILD_TYPE=release TARGET_TYPE=release install; rc=$?; \
+    test -e /opt/daos/lib64/libdaos.so && test -f /opt/daos/include/daos.h || exit "$rc"
+
+# Keep the public headers, libdaos, and every library libdaos resolves to inside
+# /opt/daos (gurt, cart, mercury, isa-l, ...); system libraries stay out.
+RUN set -e; arch=$(uname -m); out=/out/daos/${arch}; \
+    mkdir -p ${out}/include ${out}/lib64; \
+    cp -a /opt/daos/include/. ${out}/include/; \
+    lib=$(find /opt/daos -name 'libdaos.so' | head -1); \
+    export LD_LIBRARY_PATH=$(find /opt/daos -name '*.so*' -printf '%h\n' | sort -u | paste -sd:); \
+    cp -a $(dirname ${lib})/libdaos.so* ${out}/lib64/; \
+    ldd ${lib} | awk '/=> \/opt\/daos/ {print $3}' | while read -r so; do \
+        cp -aL "${so}" ${out}/lib64/; \
+    done; \
+    ls -la ${out}/lib64
+
+FROM busybox:1.37
+COPY --from=build /out/daos/ /daos/

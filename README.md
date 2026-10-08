@@ -40,7 +40,7 @@ method, raw numbers and the conclusions later retracted, are in
 |---|---|
 | `src/plugins/daos/` | the plugin: `nixlDaosEngine`, meson build, user documentation |
 | `test/unit/plugins/daos/` | programs that need a live DAOS pool: `test_reg`, `test_xfer`, `test_agent`, plus `test_gpu` and `bench_nixl` (not part of the upstream submission) |
-| `upstream/` | the upstream submission: `integration.patch` and `apply-integration.sh` wire the plugin into a NIXL source tree; `0001-*.patch` is the commit as it will be submitted; issue and PR drafts |
+| `upstream/` | the upstream submission: `integration.patch` and `apply-integration.sh` wire the plugin into a NIXL source tree; `0001-*.patch` is the commit as it will be submitted; issue and PR drafts; `ci/` holds an Ubuntu DAOS client image and build check for NIXL CI |
 | `ci/build.sh` | builds NIXL + the plugin inside a DAOS client image and produces the runtime image `nixl-daos:dev` (`images/Dockerfile.runtime`) |
 | `ci/e2e-testbed.sh` | runs the tests from that image against an existing DAOS pool on a client host |
 | `doc/measurements/` | measurement reports behind the numbers above |
