@@ -16,7 +16,8 @@ A new storage backend plugin, `DAOS`, for the DAOS distributed object store.
 - `test/unit/plugins/daos/`: `nixl_daos_test_reg`, `nixl_daos_test_xfer`,
   `nixl_daos_test_agent` (need a live DAOS pool; built and installed, not
   registered with `meson test`).
-- Build: `DAOS` in `all_plugins`; `-Ddisable_daos_backend`, `-Ddaos_path`.
+- Build: `DAOS` in `all_plugins`; `-Ddaos_path`. Static builds (`-Dstatic_plugins=DAOS`)
+  register it in `src/core`.
 
 ## Why?
 
@@ -50,6 +51,10 @@ backend use it directly. Design discussed in #2361.
   and NIXL builds; with a DAOS v2.8.0 client built from source (a 23 MB data
   image, like `Dockerfile.infinia-libs`) the plugin and tests build with
   `--buildtype=debug`, 312/312 targets.
+- After the INFINIA-review changes: the three tests again on DAOS 2.8.0, plus
+  `test_xfer` with `NIXL_DAOS_EQ_TIMEOUT=0` (blocking path) and with a malformed
+  `NIXL_DAOS_THREADS`; Ubuntu 24.04 shared and static (`-Dstatic_plugins=DAOS`)
+  builds; upstream `copyright-check.sh` passes.
 - Earlier throughput measurement (same backend code, NIXL e77af99, 2 DAOS 2.9.100 ranks, 400G
   verbs): 34.17 GB/s reading 4.69 GiB.
 

@@ -6,8 +6,8 @@
 #
 # The plugin lives in this repo: src/plugins/daos (backend + README) and
 # test/unit/plugins/daos (tests), in the form proposed upstream. The meson wiring
-# (DAOS in all_plugins, -Ddisable_daos_backend, -Ddaos_path, the src/plugins and
-# test/unit/plugins gates) is upstream/integration.patch. The whole change as one
+# (DAOS in all_plugins, -Ddaos_path, the src/plugins and test/unit/plugins gates,
+# static-plugin registration in src/core) is upstream/integration.patch. The whole change as one
 # upstream commit is upstream/0001-plugins-add-DAOS-storage-backend.patch.
 #   usage: [PLUGIN_SRC=dir] [TESTS_SRC=dir] upstream/apply-integration.sh <nixl-src-dir>
 set -euo pipefail

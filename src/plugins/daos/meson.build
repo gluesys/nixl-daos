@@ -1,3 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -12,13 +13,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-if get_option('disable_daos_backend')
-    if is_explicit_enable or 'DAOS' in static_plugins
-        error('DAOS plugin requested but the DAOS backend is disabled')
-    endif
-    subdir_done()
-endif
 
 fs = import('fs')
 

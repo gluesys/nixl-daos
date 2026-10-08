@@ -1,4 +1,5 @@
 /*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -75,19 +76,19 @@ public:
                   daos_obj_id_t oid,
                   uint64_t dev_id)
         : nixlBackendMD(true),
-          pool_(pool),
-          cont_(cont),
-          oh_(oh),
-          oid_(oid),
-          devId_(dev_id) {}
+          pool(pool),
+          cont(cont),
+          oh(oh),
+          oid(oid),
+          devId(dev_id) {}
 
     ~nixlDaosObjMD() override = default;
 
-    std::string pool_;
-    std::string cont_;
-    daos_handle_t oh_;
-    daos_obj_id_t oid_;
-    uint64_t devId_;
+    std::string pool;
+    std::string cont;
+    daos_handle_t oh;
+    daos_obj_id_t oid;
+    uint64_t devId;
 };
 
 /*
@@ -95,7 +96,9 @@ public:
  * become one daos_obj_fetch()/daos_obj_update() call. The vectors own the
  * memory that the DAOS structures point into, so they are sized once in
  * prepXfer() and never grown afterwards -- a reallocation here would leave
- * iod_recxs and sg_iovs dangling.
+ * iod_recxs and sg_iovs dangling. They are parallel vectors rather than one
+ * vector of structs because daos_obj_fetch() takes the iods and the sgls as two
+ * separate contiguous arrays.
  */
 struct nixlDaosIoGroup {
     daos_handle_t oh{};
@@ -122,9 +125,9 @@ struct nixlDaosIoGroup {
  * folded. Folding hid the cost because it left only 120 requests; nothing
  * guarantees a real workload folds that well, so the threads had to go.
  *
- * Blocking DAOS calls on a pool, rather than a DAOS event queue: the event
- * path serialises on the per-EQ eqx_lock and has been measured to cap around
- * 7-12 GB/s however the queues are arranged.
+ * Each thread issues one DAOS call at a time and waits for it, on an event
+ * queue with a deadline unless NIXL_DAOS_EQ_TIMEOUT is 0 (see daos_backend.cpp
+ * for the measurements behind that default).
  */
 class nixlDaosThreadPool {
 public:
@@ -169,15 +172,15 @@ public:
             /* Taking the lock before notifying is what makes waitDone() safe:
              * a waiter that has already evaluated the predicate is inside
              * wait() holding nothing, and this hands off cleanly. */
-            std::lock_guard<std::mutex> g(doneMtx);
-            doneCv.notify_all();
+            std::lock_guard<std::mutex> g(doneMtx_);
+            doneCv_.notify_all();
         }
     }
 
     void
     waitDone() {
-        std::unique_lock<std::mutex> g(doneMtx);
-        doneCv.wait(g, [this] { return pending.load() == 0; });
+        std::unique_lock<std::mutex> g(doneMtx_);
+        doneCv_.wait(g, [this] { return pending.load() == 0; });
     }
 
     void
@@ -187,14 +190,19 @@ public:
     }
 
 private:
-    std::mutex doneMtx;
-    std::condition_variable doneCv;
+    std::mutex doneMtx_;
+    std::condition_variable doneCv_;
 };
 
 class nixlDaosEngine : public nixlBackendEngine {
 public:
-    static nixl_b_params_t
+    [[nodiscard]] static nixl_b_params_t
     getPluginParams();
+
+    /* The segments this backend serves; the plugin declaration and
+     * getSupportedMems() both use it so they cannot disagree. */
+    [[nodiscard]] static nixl_mem_list_t
+    supportedMems();
 
     explicit nixlDaosEngine(const nixlBackendInitParams *init_params);
     ~nixlDaosEngine() override;
@@ -210,28 +218,24 @@ public:
      * the library does not have turns a clean "unsupported" into a failure
      * further down. meson decides this, not a runtime check.
      */
-    bool
-    supportsRemote() const override {
+    [[nodiscard]] bool
+    supportsRemote() const noexcept override {
         return false;
     }
 
-    bool
-    supportsLocal() const override {
+    [[nodiscard]] bool
+    supportsLocal() const noexcept override {
         return true;
     }
 
-    bool
-    supportsNotif() const override {
+    [[nodiscard]] bool
+    supportsNotif() const noexcept override {
         return false;
     }
 
-    nixl_mem_list_t
+    [[nodiscard]] nixl_mem_list_t
     getSupportedMems() const override {
-#ifdef NIXL_DAOS_HAVE_GPU
-        return {FILE_SEG, DRAM_SEG, VRAM_SEG};
-#else
-        return {FILE_SEG, DRAM_SEG};
-#endif
+        return supportedMems();
     }
 
     /* ---- lifecycle no-ops (final) ---------------------------------------
@@ -325,9 +329,9 @@ private:
      * https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/NIXL-DAOS-MEASUREMENT.md. */
     mutable std::unique_ptr<nixlDaosThreadPool> pool_;
 
-    /* Event queues, borrowed per request. Only used when NIXL_DAOS_EQ_TIMEOUT
-     * is set; see daos_backend.cpp for why it is a borrow pool and not one
-     * queue per thread. */
+    /* Event queues, borrowed per request. Used unless NIXL_DAOS_EQ_TIMEOUT is
+     * 0; see daos_backend.cpp for why it is a borrow pool and not one queue per
+     * thread. */
     /* unique_ptr so the class itself can stay in the .cpp with the
      * measurements that explain it; the destructor is defined there, which is
      * where the complete type is needed. */
