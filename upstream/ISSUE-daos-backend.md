@@ -2,9 +2,13 @@
 <!-- Copyright 2026 Gluesys Co., Ltd. -->
 
 <!-- Design-discussion issue for ai-dynamo/nixl (CONTRIBUTING: a large enhancement
-     needs an issue before the PR). Posted 2026-10-08 as
-     https://github.com/ai-dynamo/nixl/issues/2361; body
-     rewritten 2026-10-08 in the What/Why/How form of #1569. -->
+     needs an issue before the PR). Body written in the What/Why/How form of
+     upstream issue 1569.
+
+     Posted 2026-10-08 and withdrawn 2026-10-09 with no replies, to finish tidying
+     the documentation this draft points at. It goes up again as a NEW issue, not
+     by reopening the old one, so the timeline starts clean. Update every
+     "not posted yet" marker in upstream/README.md when it does. -->
 
 **Title:** RFC: DAOS storage backend plugin
 
@@ -42,6 +46,8 @@ Out-of-tree plugin: https://github.com/gluesys/nixl-daos ([`src/plugins/daos/REA
 - Build: `-Ddaos_path` points at the DAOS client; skipped with a warning when the client is absent, an error when requested explicitly, and `-Ddisable_plugins=DAOS` leaves it out
 - Tests in `test/unit/plugins/daos/` (`test_reg`, `test_xfer`, `test_agent`); they need a live pool, so they are built but not registered with `meson test`
 
+Copyright headers follow the INFINIA plugin: an NVIDIA `SPDX-FileCopyrightText` line next to the Gluesys one, which `.github/workflows/copyright-check.sh` accepts as it stands. Say the word if you would rather add "Gluesys Co., Ltd" to `AUTHORS` instead, as was done for AMD.
+
 **Status:** on NIXL main (44c1b56) it builds with `-Werror` against DAOS 2.8 (`daos-devel` 2.8.0-6), is clang-format clean, and passes all three tests against a DAOS 2.8.0-6 server (1 rank, `ofi+tcp`, client in a Kubernetes pod with `daos_agent` as a sidecar).
 
 ### **Questions for the NIXL team**
@@ -50,8 +56,6 @@ Out-of-tree plugin: https://github.com/gluesys/nixl-daos ([`src/plugins/daos/REA
 2. **Runtime tests.** Our tests need a live DAOS pool, so they are built but not registered with `meson test` (like `test/unit/plugins/infinia`). Is that acceptable for a first version, or do you want GoogleTest cases that skip when no pool is configured?
 3. **Configuration.** Thread-pool size and the event-queue deadline are read from environment variables. We can move them to backend parameters (`getPluginParams()`) if that is the convention you want for new plugins.
 4. **GPU-direct.** `VRAM_SEG` depends on a DAOS client with GPU support that is not in a released DAOS yet, and is currently about 3.4x slower than staging through host memory. Should we drop it from the first PR and add it later?
-5. **Copyright header.** `.github/workflows/copyright-check.sh` accepts a file only with an `SPDX-FileCopyrightText` line from the `AUTHORS` list (NVIDIA, AMD). The new files are written by Gluesys. Should we add the NVIDIA line next to ours, as the INFINIA plugin did, or would you add "Gluesys Co., Ltd" to `AUTHORS`, as was done for AMD?
-
 ### **Prior contribution**
 
 While writing this backend we found the `customParams` null dereference in `nixlBackendEngine`: reported in #2245 and fixed by #2246 (merged).

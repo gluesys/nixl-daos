@@ -8,7 +8,7 @@
 | `0001-plugins-add-DAOS-storage-backend.patch` | one commit on upstream main (DCO signed off): the whole change the PR will carry |
 | `integration.patch` | the meson wiring part of that commit (`meson.build`, `meson_options.txt`, `src/plugins/meson.build`, `test/unit/plugins/meson.build`) |
 | `apply-integration.sh` | puts this repository's plugin and tests into a NIXL tree and applies `integration.patch`; used by CI (`ci/build.sh`) |
-| `ISSUE-daos-backend.md` | the upstream design-discussion issue. **Posted: [ai-dynamo/nixl#2361](https://github.com/ai-dynamo/nixl/issues/2361) (2026-10-08)** |
+| `ISSUE-daos-backend.md` | the upstream design-discussion issue. **Posted 2026-10-08, withdrawn 2026-10-09 with no replies; goes up again as a new issue once the docs it points at are ready** |
 | `PR-daos-backend.md` | draft PR body (upstream template What/Why/How; not posted) |
 | `ci/Dockerfile.daos-libs` | DAOS client headers and libraries for Ubuntu as a small data image, the way upstream's `Dockerfile.infinia-libs` supplies Infinia (answer (a) to question 1 of the issue) |
 | `ci/Dockerfile.ubuntu-check` | builds NIXL + the DAOS plugin and tests on Ubuntu 24.04 from that image, with upstream CI's build settings |
@@ -84,10 +84,13 @@ CI lane B (DAOS 2.8.0, 1 rank, `ofi+tcp`) the three tests pass, plus
 ## Order of submission
 
 1. **Issue first.** Upstream CONTRIBUTING asks that a large feature agree on its
-   design in an issue before the PR. `ISSUE-daos-backend.md` → **posted as #2361**
-   (five questions: DAOS client in CI, form of the runtime tests, configuration,
-   whether to include VRAM_SEG, the copyright line, since upstream
-   copyright-check requires an approved copyright holder).
+   design in an issue before the PR. `ISSUE-daos-backend.md` → **posted 2026-10-08
+   and withdrawn the next day with no replies**, to finish tidying the
+   documentation it links to. Re-post it as a *new* issue rather than reopening
+   the old one, then put the number back in this file and in the repository
+   README and CONTRIBUTING. Four questions remain: DAOS client in CI, form of the
+   runtime tests, configuration, whether to include VRAM_SEG. The copyright
+   question is settled — NVIDIA line next to ours, as the INFINIA plugin does.
 2. Adjust the branch to what is agreed.
 3. Push the branch to the fork `hgichon/nixl` (where PR #2246 came from) and open
    the PR with `PR-daos-backend.md` as the body. Commits need a DCO sign-off

@@ -23,7 +23,7 @@ A new storage backend plugin, `DAOS`, for the DAOS distributed object store.
 
 NIXL has no DAOS backend. DAOS is an open-source distributed object store used
 for HPC and AI storage; a NIXL backend lets Dynamo/KVBM and the LMCache NIXL
-backend use it directly. Design discussed in #2361.
+backend use it directly. Design discussed in the RFC issue (fill in the number when it is posted).
 
 ## How?
 
