@@ -8,6 +8,29 @@
 | `0001-plugins-add-DAOS-storage-backend.patch` | one commit on upstream main (DCO signed off): the whole change the PR will carry |
 | `integration.patch` | the meson wiring part of that commit (`meson.build`, `meson_options.txt`, `src/plugins/meson.build`, `test/unit/plugins/meson.build`) |
 | `apply-integration.sh` | puts this repository's plugin and tests into a NIXL tree and applies `integration.patch`; used by CI (`ci/build.sh`) |
+## Verified on hardware (2026-10-10, cxl2 / DAOS 2.8.0-6)
+
+`queryMem()`, the backend parameters and the error mapping were added and run
+against a live pool (`da12_nvme`, 8 targets, a container created for the test and
+destroyed after). NIXL main `44c1b56`, `-Denable_plugins=DAOS --buildtype=debug`,
+271/271 targets.
+
+| test | result |
+|---|---|
+| `test_reg` | ALL PASS |
+| `test_xfer` | ALL PASS |
+| `test_query` (new) | ALL PASS |
+| `test_agent` | ALL PASS |
+
+The live run is what found the object-type bug: `daos_obj_query_key()` refused
+the ordered query with *"Can't query non UINT64 typed Dkeys"* (`-DER_INVAL`)
+because objects were created `DAOS_OT_MULTI_HASHED` while the backend writes
+uint64 dkeys and akeys. Changed to `DAOS_OT_MULTI_UINT64`; all four tests pass
+after it. The object type is part of the object id, so this is not readable
+against objects an older build wrote.
+
+`clang-format` 21 clean on the changed files.
+
 | `ISSUE-daos-backend.md` | the upstream design-discussion issue. **Posted 2026-10-08, withdrawn 2026-10-09 with no replies; goes up again as a new issue once the docs it points at are ready** |
 | `PR-daos-backend.md` | draft PR body (upstream template What/Why/How; not posted) |
 | `ci/Dockerfile.daos-libs` | DAOS client headers and libraries for Ubuntu as a small data image, the way upstream's `Dockerfile.infinia-libs` supplies Infinia (answer (a) to question 1 of the issue) |
@@ -16,7 +39,7 @@
 ## Base and verification (2026-10-08)
 
 - Base: ai-dynamo/nixl main `44c1b56`. Local branch `feat/daos-backend` (worktree
-  `../nixl-wt-daos`, commit `6fad003`).
+  `../nixl-wt-daos`, commit `c772e71`).
 - Form: follows upstream CONTRIBUTING and the most recent external plugin
   (INFINIA, DDN), minus what its review rejected: `-Ddaos_path` only, no
   `disable_*` option (`-Ddisable_plugins=DAOS` covers it); skipped with a

@@ -19,7 +19,8 @@ echo "plugin source: $PLUGIN_SRC"; echo "tests source:  $TESTS_SRC"
 
 mkdir -p "$NIXL/src/plugins/daos" "$NIXL/test/unit/plugins/daos"
 cp "$PLUGIN_SRC"/*.cpp "$PLUGIN_SRC"/*.h "$PLUGIN_SRC"/meson.build "$PLUGIN_SRC"/README.md "$NIXL/src/plugins/daos/"
-cp "$TESTS_SRC"/test_reg.cpp "$TESTS_SRC"/test_xfer.cpp "$TESTS_SRC"/test_agent.cpp "$TESTS_SRC"/meson.build "$NIXL/test/unit/plugins/daos/"
+cp "$TESTS_SRC"/test_reg.cpp "$TESTS_SRC"/test_xfer.cpp "$TESTS_SRC"/test_query.cpp \
+   "$TESTS_SRC"/test_agent.cpp "$TESTS_SRC"/meson.build "$NIXL/test/unit/plugins/daos/"
 
 # meson wiring: skip when the tree already has it (DAOS in all_plugins)
 if grep -q "'DAOS'" "$NIXL/meson.build"; then

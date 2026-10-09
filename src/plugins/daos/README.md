@@ -28,9 +28,22 @@ DAOS objects with the DAOS **object API** (dkey/akey), not the DFS file layer.
   advertised only when the DAOS client exports GPU-direct entry points (see
   [GPU memory](#gpu-memory)).
 - **Local transfers only:** `supportsLocal()` is true, `supportsRemote()` false.
+- **`queryMem()`** answers whether an object is there and how far it extends, so
+  a cache can decide to recompute without reading. An object that was never
+  written is reported absent, not as an error.
 - **Throughput:** 34.17 GB/s reading 4.69 GiB (120 objects x 40 layers x 1 MiB)
   from 2 DAOS ranks over 400G verbs, on a DAOS 2.9.100 development build
   ([measurement][meas]).
+
+### Object type
+
+Objects are created with `DAOS_OT_MULTI_UINT64`. The dkey and akey this backend
+writes are uint64 (`addr / 64 MiB` and `addr % 64 MiB`), so declaring them
+hashed would throw away the ordering DAOS needs for an ordered query --
+`daos_obj_query_key()` answers "Can't query non UINT64 typed Dkeys"
+(`-DER_INVAL`), and `queryMem()` cannot find the end of an object. The object
+type is part of the object id, so objects written by a build that used
+`DAOS_OT_MULTI_HASHED` are not reachable from one that uses this.
 
 ### Why the object API and not DFS
 
@@ -46,6 +59,17 @@ At 1 MiB objects DFS spends about 90% of the time on overhead the object API
 does not pay. The object API also folds a whole descriptor list into one
 `daos_obj_fetch()` through its iod array, which is the shape `prepXfer()` hands
 the backend.
+
+## Configuration
+
+Both can be given as backend parameters to `createBackend()`, which is the only
+way two DAOS backends in one agent can differ, or through the environment for a
+whole process. The parameter wins.
+
+| parameter | environment | default | what it is |
+|---|---|---|---|
+| `threads` | `NIXL_DAOS_THREADS` | 64 | IO threads, 1..512 |
+| `eq_timeout` | `NIXL_DAOS_EQ_TIMEOUT` | 60 | seconds a request may wait in the event queue before it is abandoned; 0 makes every call blocking |
 
 ## Dependencies
 

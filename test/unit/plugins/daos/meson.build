@@ -19,7 +19,7 @@
 # test_reg and test_xfer drive the backend class directly; test_agent goes
 # through a real nixlAgent and needs NIXL_PLUGIN_DIR at run time.
 daos_test_inc = daos_incdirs + [include_directories('../../../../src/plugins/daos')]
-foreach t : ['test_reg', 'test_xfer']
+foreach t : ['test_reg', 'test_xfer', 'test_query']
     executable('nixl_daos_' + t, t + '.cpp',
                dependencies: [nixl_infra, nixl_common_dep, daos_lib, daos_backend_interface, absl_log_dep],
                include_directories: daos_test_inc,
