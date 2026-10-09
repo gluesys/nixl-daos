@@ -10,9 +10,9 @@ moves data between local memory and DAOS objects through the DAOS object API
 Dynamo/KVBM and the LMCache NIXL backend.
 
 > **Out of tree, on its way upstream.** NIXL has no DAOS backend today. The design
-> is proposed in [ai-dynamo/nixl#2361](https://github.com/ai-dynamo/nixl/issues/2361);
-> the PR follows once it is agreed. This repository holds the plugin until then,
-> plus its container build and testbed scripts.
+> goes to NIXL as an RFC issue first and the PR follows once it is agreed; the
+> draft of both is in [`upstream/`](upstream/). This repository holds the plugin
+> until then, plus its container build and testbed scripts.
 
 ## What has been measured
 

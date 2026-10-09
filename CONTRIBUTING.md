@@ -23,10 +23,10 @@ configured, not a policy about outside contributions.
 
 ## Where the plugin is going
 
-The plugin is being proposed to NIXL as an in-tree backend
-([ai-dynamo/nixl#2361](https://github.com/ai-dynamo/nixl/issues/2361)). Once it is
-merged there, changes to the plugin itself belong in
-[ai-dynamo/nixl](https://github.com/ai-dynamo/nixl) and follow its CONTRIBUTING.
+The plugin is being proposed to NIXL as an in-tree backend; the RFC and PR drafts
+are in [`upstream/`](upstream/). Once it is merged there, changes to the plugin
+itself belong in [ai-dynamo/nixl](https://github.com/ai-dynamo/nixl) and follow
+its CONTRIBUTING.
 Until then, `src/plugins/daos/` and `test/unit/plugins/daos/` here are the
 source, and `upstream/` holds the commit as it will be submitted.
 
