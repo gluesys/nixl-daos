@@ -29,11 +29,13 @@ DAOS objects with the DAOS **object API** (dkey/akey), not the DFS file layer.
   [GPU memory](#gpu-memory)).
 - **Local transfers only:** `supportsLocal()` is true, `supportsRemote()` false.
 - **Throughput:** 34.17 GB/s reading 4.69 GiB (120 objects x 40 layers x 1 MiB)
-  from 2 DAOS ranks over 400G verbs ([measurement][meas]).
+  from 2 DAOS ranks over 400G verbs, on a DAOS 2.9.100 development build
+  ([measurement][meas]).
 
 ### Why the object API and not DFS
 
-The same 4800 reads of 1 MiB, measured both ways ([measurement][layer]):
+The same 4800 reads of 1 MiB, measured both ways on a DAOS 2.9.100 development
+build ([measurement][layer]):
 
 | path | fixed cost per object | marginal |
 |---|---|---|
@@ -48,7 +50,9 @@ the backend.
 ## Dependencies
 
 - A DAOS client: headers (`daos.h`) and `libdaos`, from the `daos-devel`
-  package or a source build. Tested with DAOS 2.8.
+  package or a source build. Built and functionally tested against DAOS 2.8; the
+  throughput numbers above come from a 2.9.100 development build, which is where
+  the hardware was.
 - A running `daos_agent` on the host, and a DAOS pool and container the process
   may access.
 
