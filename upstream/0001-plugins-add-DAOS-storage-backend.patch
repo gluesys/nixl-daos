@@ -1,4 +1,4 @@
-From 900ec46e6c2447838348408eb90a7e248308c438 Mon Sep 17 00:00:00 2001
+From 6fad00360f3bc92008179a9d7af65005c7e559a9 Mon Sep 17 00:00:00 2001
 From: Kyeongpyo Kim <hgichon@gmail.com>
 Date: Wed, 7 Oct 2026 22:53:41 +0900
 Subject: [PATCH] plugins: add DAOS storage backend
@@ -38,7 +38,7 @@ Signed-off-by: Kyeongpyo Kim <hgichon@gmail.com>
  meson_options.txt                     |   1 +
  src/core/meson.build                  |   4 +
  src/core/nixl_plugin_manager.cpp      |   4 +
- src/plugins/daos/README.md            | 198 +++++++
+ src/plugins/daos/README.md            | 202 +++++++
  src/plugins/daos/daos_backend.cpp     | 815 ++++++++++++++++++++++++++
  src/plugins/daos/daos_backend.h       | 348 +++++++++++
  src/plugins/daos/daos_plugin.cpp      |  50 ++
@@ -49,7 +49,7 @@ Signed-off-by: Kyeongpyo Kim <hgichon@gmail.com>
  test/unit/plugins/daos/test_reg.cpp   | 108 ++++
  test/unit/plugins/daos/test_xfer.cpp  | 183 ++++++
  test/unit/plugins/meson.build         |   4 +
- 15 files changed, 2023 insertions(+), 1 deletion(-)
+ 15 files changed, 2027 insertions(+), 1 deletion(-)
  create mode 100644 src/plugins/daos/README.md
  create mode 100644 src/plugins/daos/daos_backend.cpp
  create mode 100644 src/plugins/daos/daos_backend.h
@@ -117,10 +117,10 @@ index 72c3314..cbef2e3 100644
  }
 diff --git a/src/plugins/daos/README.md b/src/plugins/daos/README.md
 new file mode 100644
-index 0000000..ef66897
+index 0000000..16f7448
 --- /dev/null
 +++ b/src/plugins/daos/README.md
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,202 @@
 +<!--
 +SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 +SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
@@ -152,11 +152,13 @@ index 0000000..ef66897
 +  [GPU memory](#gpu-memory)).
 +- **Local transfers only:** `supportsLocal()` is true, `supportsRemote()` false.
 +- **Throughput:** 34.17 GB/s reading 4.69 GiB (120 objects x 40 layers x 1 MiB)
-+  from 2 DAOS ranks over 400G verbs ([measurement][meas]).
++  from 2 DAOS ranks over 400G verbs, on a DAOS 2.9.100 development build
++  ([measurement][meas]).
 +
 +### Why the object API and not DFS
 +
-+The same 4800 reads of 1 MiB, measured both ways ([measurement][layer]):
++The same 4800 reads of 1 MiB, measured both ways on a DAOS 2.9.100 development
++build ([measurement][layer]):
 +
 +| path | fixed cost per object | marginal |
 +|---|---|---|
@@ -171,7 +173,9 @@ index 0000000..ef66897
 +## Dependencies
 +
 +- A DAOS client: headers (`daos.h`) and `libdaos`, from the `daos-devel`
-+  package or a source build. Tested with DAOS 2.8.
++  package or a source build. Built and functionally tested against DAOS 2.8; the
++  throughput numbers above come from a 2.9.100 development build, which is where
++  the hardware was.
 +- A running `daos_agent` on the host, and a DAOS pool and container the process
 +  may access.
 +

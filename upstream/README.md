@@ -16,7 +16,7 @@
 ## Base and verification (2026-10-08)
 
 - Base: ai-dynamo/nixl main `44c1b56`. Local branch `feat/daos-backend` (worktree
-  `../nixl-wt-daos`, commit `900ec46`).
+  `../nixl-wt-daos`, commit `6fad003`).
 - Form: follows upstream CONTRIBUTING and the most recent external plugin
   (INFINIA, DDN), minus what its review rejected: `-Ddaos_path` only, no
   `disable_*` option (`-Ddisable_plugins=DAOS` covers it); skipped with a
