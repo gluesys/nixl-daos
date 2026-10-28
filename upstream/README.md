@@ -38,8 +38,11 @@ against objects an older build wrote.
 
 ## Base and verification (2026-10-08)
 
-- Base: ai-dynamo/nixl main `44c1b56`. Local branch `feat/daos-backend` (worktree
-  `../nixl-wt-daos`, commit `c772e71`).
+- Base: ai-dynamo/nixl main `280c3a1` (rebased 2026-10-28 from `44c1b56`, no
+  conflicts; the plugin sources are unchanged). Local branch `feat/daos-backend`
+  (worktree `../nixl-wt-daos`, commit `1325d9c`). After the rebase
+  `ci/Dockerfile.ubuntu-check` builds 313/313 targets on Ubuntu 24.04 with no
+  warnings, and all four test binaries link. The runtime tests were not re-run.
 - Form: follows upstream CONTRIBUTING and the most recent external plugin
   (INFINIA, DDN), minus what its review rejected: `-Ddaos_path` only, no
   `disable_*` option (`-Ddisable_plugins=DAOS` covers it); skipped with a

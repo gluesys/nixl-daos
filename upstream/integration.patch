@@ -1,5 +1,5 @@
 diff --git a/meson.build b/meson.build
-index ad264ca..c4b37f4 100644
+index 3a85df4..2184dfa 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -29,7 +29,7 @@ if enable_plugins_opt != '' and disable_plugins_opt != ''
@@ -24,7 +24,7 @@ index 791a532..3cccfc2 100644
  option('gds_path', type: 'string', value: '/usr/local/cuda/', description: 'Path to GDS CuFile install')
  option('cudapath_inc', type: 'string', value: '', description: 'Include path for CUDA')
 diff --git a/src/core/meson.build b/src/core/meson.build
-index e0dd563..e410d11 100644
+index 9d13714..76f989f 100644
 --- a/src/core/meson.build
 +++ b/src/core/meson.build
 @@ -37,6 +37,10 @@ if is_variable('infinia_backend_interface') and 'INFINIA' in static_plugins
@@ -39,10 +39,10 @@ index e0dd563..e410d11 100644
      nixl_lib_deps += [ obj_backend_interface ]
  endif
 diff --git a/src/core/nixl_plugin_manager.cpp b/src/core/nixl_plugin_manager.cpp
-index 72c3314..cbef2e3 100644
+index 2896912..a11195d 100644
 --- a/src/core/nixl_plugin_manager.cpp
 +++ b/src/core/nixl_plugin_manager.cpp
-@@ -864,6 +864,10 @@ void nixlPluginManager::registerBuiltinPlugins() {
+@@ -876,6 +876,10 @@ void nixlPluginManager::registerBuiltinPlugins() {
      NIXL_REGISTER_STATIC_PLUGIN(Backend, INFINIA)
  #endif
  
@@ -70,10 +70,10 @@ index bee09bd..052cdfa 100644
  gusli_lib_found = cc.find_library(gusli_lib_file, required: false)
  if enabled_plugins.get('GUSLI')
 diff --git a/test/unit/plugins/meson.build b/test/unit/plugins/meson.build
-index 7d6a9f0..6e5b6ec 100644
+index 5fe92ce..20b77f3 100644
 --- a/test/unit/plugins/meson.build
 +++ b/test/unit/plugins/meson.build
-@@ -73,6 +73,10 @@ if is_variable('infinia_backend_interface')
+@@ -81,6 +81,10 @@ if is_variable('infinia_backend_interface')
      subdir('infinia')
  endif
  
