@@ -8,6 +8,23 @@
 | `0001-plugins-add-DAOS-storage-backend.patch` | one commit on upstream main (DCO signed off): the whole change the PR will carry |
 | `integration.patch` | the meson wiring part of that commit (`meson.build`, `meson_options.txt`, `src/plugins/meson.build`, `test/unit/plugins/meson.build`) |
 | `apply-integration.sh` | puts this repository's plugin and tests into a NIXL tree and applies `integration.patch`; used by CI (`ci/build.sh`) |
+## Verified on hardware (2026-10-28, NIXL main `280c3a1`)
+
+Lane B: DAOS 2.8.0 server, 1 rank on `exaci5-2a` (QEMU NVMe through SPDK, 4
+targets, `ofi+tcp`), client pod on `exaci5-2b` with `daos_agent` as a sidecar,
+pool `nixlpool` (8 GiB, rf 0) created for the test and destroyed after. Test
+image `nixl-daos:test-1325d9c` (daos-client 2.8.0 base, `ci/build.sh`).
+
+| test | result |
+|---|---|
+| `test_reg` | ALL PASS |
+| `test_xfer` | ALL PASS |
+| `test_query` | ALL PASS (16 checks) |
+| `test_agent` | ALL PASS |
+
+No `DER_BUSY` or "cannot finalize" at exit. The same tree also builds on EL9
+(`daos-devel` 2.8.0-6, gcc 11): 317/317 targets.
+
 ## Verified on hardware (2026-10-10, cxl2 / DAOS 2.8.0-6)
 
 `queryMem()`, the backend parameters and the error mapping were added and run
@@ -42,7 +59,8 @@ against objects an older build wrote.
   conflicts; the plugin sources are unchanged). Local branch `feat/daos-backend`
   (worktree `../nixl-wt-daos`, commit `1325d9c`). After the rebase
   `ci/Dockerfile.ubuntu-check` builds 313/313 targets on Ubuntu 24.04 with no
-  warnings, and all four test binaries link. The runtime tests were not re-run.
+  warnings, and all four test binaries link. On the same base the four runtime
+  tests pass against a DAOS 2.8.0 server (lane B, see below).
 - Form: follows upstream CONTRIBUTING and the most recent external plugin
   (INFINIA, DDN), minus what its review rejected: `-Ddaos_path` only, no
   `disable_*` option (`-Ddisable_plugins=DAOS` covers it); skipped with a
