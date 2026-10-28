@@ -297,6 +297,14 @@ public:
     nixl_status_t
     checkXfer(nixlBackendReqH *handle) const override;
 
+    /* "Is this object here, and how much of it?" -- the probe a cache makes
+     * before it decides to recompute. The base class answers NOT_SUPPORTED,
+     * which would make nixlAgent::queryMem() (C++, Python and Rust all expose
+     * it) useless against DAOS, so a storage backend has to answer it. OBJ,
+     * POSIX and INFINIA all do. */
+    nixl_status_t
+    queryMem(const nixl_reg_dlist_t &descs, std::vector<nixl_query_resp_t> &resp) const override;
+
     nixl_status_t
     releaseReqH(nixlBackendReqH *handle) const override;
 
@@ -313,13 +321,17 @@ private:
         int refs;
     };
 
+    /* const because queryMem() is const and still has to reach a container.
+     * The cache they maintain is mutable for the same reason postXfer()'s
+     * thread pool is: opening a container does not change what the engine is,
+     * only what it has already opened. */
     nixl_status_t
-    getCont(const std::string &pool, const std::string &cont, contHandles *&out);
+    getCont(const std::string &pool, const std::string &cont, contHandles *&out) const;
     void
-    putCont(const std::string &pool, const std::string &cont);
+    putCont(const std::string &pool, const std::string &cont) const;
 
     mutable std::mutex mtx_;
-    std::map<std::string, contHandles> conts_;
+    mutable std::map<std::string, contHandles> conts_;
     bool daosInited_ = false;
 
     /* Worker threads. Mutable because postXfer() is const: the interface
@@ -342,7 +354,17 @@ private:
      * enough that a big object still spreads over targets. Not yet a plugin
      * parameter; it should become one as soon as there is a second workload to
      * tune it against. */
+    /* Backend parameter, else environment/config, else the default. */
+    [[nodiscard]] long
+    param(const char *key, const char *envKey, long fallback) const;
+
     uint64_t dkeySpan_ = 64ull << 20;
+
+    /* Seconds a request may sit in the event queue before it is abandoned; 0
+     * makes every call blocking. Per engine, not per process: it used to be a
+     * function-local static, so the first backend created in a process fixed
+     * the value for every later one. */
+    double eqTimeout_ = 60.0;
 };
 
 #endif // NIXL_SRC_PLUGINS_DAOS_DAOS_BACKEND_H

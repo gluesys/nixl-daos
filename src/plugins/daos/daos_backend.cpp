@@ -20,6 +20,7 @@
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <string>
 #include <vector>
 
 #include "common/configuration.h"
@@ -156,9 +157,67 @@ nixlDaosEngine::supportedMems() {
 
 nixl_b_params_t
 nixlDaosEngine::getPluginParams() {
-    /* Nothing yet. "pool" and "container" will land here so a deployment can
-     * set a default instead of repeating it in every metaInfo. */
-    return nixl_b_params_t();
+    /* What createBackend() accepts. Both also have an environment form through
+     * nixl::config, which stays for deployments that set it once for a whole
+     * process; a value given here wins, because it is the only way to give two
+     * DAOS backends in one agent different settings.
+     *
+     * "pool" and "container" will join these so a deployment can set a default
+     * instead of repeating it in every metaInfo. */
+    return nixl_b_params_t{
+        {"threads", "IO threads, 1..512 (default 64, env NIXL_DAOS_THREADS)"},
+        {"eq_timeout",
+         "seconds a request may wait in the event queue before it is abandoned; "
+         "0 makes every call blocking (default 60, env NIXL_DAOS_EQ_TIMEOUT)"},
+    };
+}
+
+/* DAOS error -> NIXL status. Without this everything that is not a bad
+ * argument collapses into NIXL_ERR_BACKEND, and a caller cannot tell "the
+ * object is not there" from "the engine died" -- which is exactly the
+ * distinction a cache needs, and the one the event-queue deadline exists to
+ * surface. DAOS returns negated DER_* codes. */
+nixl_status_t
+daosToNixl(int rc) {
+    switch (rc) {
+    case 0:
+        return NIXL_SUCCESS;
+    case -DER_NONEXIST:
+        return NIXL_ERR_NOT_FOUND;
+    case -DER_NO_PERM:
+        return NIXL_ERR_NOT_ALLOWED;
+    case -DER_INVAL:
+    case -DER_NO_HDL:
+        return NIXL_ERR_INVALID_PARAM;
+    case -DER_TIMEDOUT:
+    case -DER_UNREACH:
+    case -DER_EXCLUDED:
+        /* The pool is unreachable or the rank serving it is gone. The caller's
+         * recovery for this is not the same as for a malformed request. */
+        return NIXL_ERR_REMOTE_DISCONNECT;
+    case -DER_CANCELED:
+        return NIXL_ERR_CANCELED;
+    default:
+        return NIXL_ERR_BACKEND;
+    }
+}
+
+/* Read a backend parameter, falling back to the environment/config form.
+ * getInitParam() answers NIXL_ERR_INVALID_PARAM when the key is simply absent,
+ * which is not an error here. */
+long
+nixlDaosEngine::param(const char *key, const char *envKey, long fallback) const {
+    std::string v;
+    if (getInitParam(key, v) == NIXL_SUCCESS) {
+        try {
+            return std::stol(v);
+        }
+        catch (const std::exception &) {
+            NIXL_WARN << "backend parameter " << key << "=\"" << v
+                      << "\" is not a number; falling back to " << envKey;
+        }
+    }
+    return configValue<long>(envKey, fallback);
 }
 
 nixlDaosEngine::nixlDaosEngine(const nixlBackendInitParams *init_params)
@@ -187,14 +246,22 @@ nixlDaosEngine::nixlDaosEngine(const nixlBackendInitParams *init_params)
      * requests in flight), so a caller that keeps fewer requests outstanding
      * is capped by its own depth rather than by this number. */
     unsigned nthreads = 64;
-    const long v = configValue<long>("NIXL_DAOS_THREADS", nthreads);
+    const long v = param("threads", "NIXL_DAOS_THREADS", nthreads);
     if (v > 0 && v <= 512) {
         nthreads = static_cast<unsigned>(v);
     } else {
-        NIXL_WARN << "NIXL_DAOS_THREADS=" << v << " ignored (expected 1..512)";
+        NIXL_WARN << "threads=" << v << " ignored (expected 1..512)";
     }
     pool_ = std::make_unique<nixlDaosThreadPool>(nthreads);
-    NIXL_DEBUG << "DAOS backend: " << nthreads << " IO threads";
+
+    /* Whole seconds: NIXL's configuration layer has no floating-point type. */
+    const long eqt = param("eq_timeout", "NIXL_DAOS_EQ_TIMEOUT", 60);
+    if (eqt >= 0) {
+        eqTimeout_ = static_cast<double>(eqt);
+    } else {
+        NIXL_WARN << "eq_timeout=" << eqt << " ignored (expected >= 0)";
+    }
+    NIXL_DEBUG << "DAOS backend: " << nthreads << " IO threads, eq_timeout " << eqTimeout_ << "s";
 }
 
 nixlDaosEngine::~nixlDaosEngine() {
@@ -226,7 +293,7 @@ nixlDaosEngine::~nixlDaosEngine() {
 }
 
 nixl_status_t
-nixlDaosEngine::getCont(const std::string &pool, const std::string &cont, contHandles *&out) {
+nixlDaosEngine::getCont(const std::string &pool, const std::string &cont, contHandles *&out) const {
     const std::string key = pool + "/" + cont;
     auto it = conts_.find(key);
 
@@ -240,14 +307,14 @@ nixlDaosEngine::getCont(const std::string &pool, const std::string &cont, contHa
     int rc = daos_pool_connect(pool.c_str(), nullptr, DAOS_PC_RW, &h.poh, nullptr, nullptr);
     if (rc != 0) {
         NIXL_ERROR << "daos_pool_connect(" << pool << ") failed: " << rc;
-        return NIXL_ERR_BACKEND;
+        return daosToNixl(rc);
     }
 
     rc = daos_cont_open(h.poh, cont.c_str(), DAOS_COO_RW, &h.coh, nullptr, nullptr);
     if (rc != 0) {
         NIXL_ERROR << "daos_cont_open(" << cont << ") failed: " << rc;
         daos_pool_disconnect(h.poh, nullptr);
-        return NIXL_ERR_BACKEND;
+        return daosToNixl(rc);
     }
 
     h.refs = 1;
@@ -256,7 +323,7 @@ nixlDaosEngine::getCont(const std::string &pool, const std::string &cont, contHa
 }
 
 void
-nixlDaosEngine::putCont(const std::string &pool, const std::string &cont) {
+nixlDaosEngine::putCont(const std::string &pool, const std::string &cont) const {
     const std::string key = pool + "/" + cont;
     auto it = conts_.find(key);
     if (it == conts_.end()) {
@@ -321,14 +388,21 @@ nixlDaosEngine::registerMem(const nixlBlobDesc &mem,
     if (!t.haveOid) {
         /* Derive the object id from devId. Deterministic on purpose: the same
          * devId must name the same object across process restarts, otherwise a
-         * cache cannot find what it stored. */
+         * cache cannot find what it stored.
+         *
+         * DAOS_OT_MULTI_UINT64, not MULTI_HASHED: the dkey and akey this
+         * backend writes *are* uint64 (addr / dkeySpan_ and addr %
+         * dkeySpan_), and declaring them hashed throws that ordering away.
+         * DAOS then refuses an ordered query -- daos_obj_query_key() answers
+         * "Can't query non UINT64 typed Dkeys" (-DER_INVAL) -- which is what
+         * queryMem() needs to find the end of an object. */
         oid.hi = 0;
         oid.lo = mem.devId;
-        const int rc = daos_obj_generate_oid(ch->coh, &oid, DAOS_OT_MULTI_HASHED, OC_UNKNOWN, 0, 0);
+        const int rc = daos_obj_generate_oid(ch->coh, &oid, DAOS_OT_MULTI_UINT64, OC_UNKNOWN, 0, 0);
         if (rc != 0) {
             NIXL_ERROR << "daos_obj_generate_oid failed: " << rc;
             putCont(t.pool, t.cont);
-            return NIXL_ERR_BACKEND;
+            return daosToNixl(rc);
         }
     }
 
@@ -337,7 +411,7 @@ nixlDaosEngine::registerMem(const nixlBlobDesc &mem,
     if (rc != 0) {
         NIXL_ERROR << "daos_obj_open failed: " << rc;
         putCont(t.pool, t.cont);
-        return NIXL_ERR_BACKEND;
+        return daosToNixl(rc);
     }
 
     out = new nixlDaosObjMD(t.pool, t.cont, oh, oid, mem.devId);
@@ -366,10 +440,107 @@ nixlDaosEngine::deregisterMem(nixlBackendMD *meta) {
     putCont(md->pool, md->cont);
     delete md;
 
-    return rc == 0 ? NIXL_SUCCESS : NIXL_ERR_BACKEND;
+    return daosToNixl(rc);
 }
 
 /* ---- transfer ------------------------------------------------------------ */
+
+nixl_status_t
+nixlDaosEngine::queryMem(const nixl_reg_dlist_t &descs,
+                         std::vector<nixl_query_resp_t> &resp) const {
+    /* std::nullopt means "not here". A descriptor that cannot be parsed, or
+     * whose container will not open, is reported the same way rather than
+     * failing the whole list: the caller asked about several objects and the
+     * answer for one of them should not hide the answer for the rest. OBJ does
+     * the same. */
+    resp.assign(static_cast<size_t>(descs.descCount()), std::nullopt);
+
+    for (int i = 0; i < descs.descCount(); ++i) {
+        const nixlBlobDesc &d = descs[i];
+
+        daosTarget t;
+        if (!parseTarget(d.metaInfo, t)) {
+            NIXL_WARN << "queryMem: DAOS metaInfo must be \"pool/container\" or "
+                         "\"pool/container/<hi>.<lo>\", got: "
+                      << d.metaInfo;
+            continue;
+        }
+
+        std::lock_guard<std::mutex> g(mtx_);
+
+        contHandles *ch = nullptr;
+        if (getCont(t.pool, t.cont, ch) != NIXL_SUCCESS) {
+            continue;
+        }
+
+        daos_obj_id_t oid = t.oid;
+        if (!t.haveOid) {
+            /* Same derivation as registerMem(): the point of querying is to
+             * learn about the object a later transfer would touch. */
+            oid.hi = 0;
+            oid.lo = d.devId;
+            const int rc =
+                daos_obj_generate_oid(ch->coh, &oid, DAOS_OT_MULTI_UINT64, OC_UNKNOWN, 0, 0);
+            if (rc != 0) {
+                NIXL_ERROR << "queryMem: daos_obj_generate_oid failed: " << rc;
+                putCont(t.pool, t.cont);
+                continue;
+            }
+        }
+
+        daos_handle_t oh;
+        int rc = daos_obj_open(ch->coh, oid, DAOS_OO_RO, &oh, nullptr);
+        if (rc != 0) {
+            /* Opening an object that was never written succeeds in DAOS, so
+             * this is a real failure, not an absent object. */
+            NIXL_ERROR << "queryMem: daos_obj_open failed: " << rc;
+            putCont(t.pool, t.cont);
+            continue;
+        }
+
+        /* Largest (dkey, akey, extent) the object holds. DAOS creates objects
+         * lazily, so "never written" comes back either as -DER_NONEXIST or as
+         * success with an empty extent -- the header documents the second. */
+        uint64_t dkeyVal = 0;
+        uint64_t akeyVal = 0;
+        daos_key_t dkey;
+        daos_key_t akey;
+        daos_recx_t recx{};
+        d_iov_set(&dkey, &dkeyVal, sizeof(dkeyVal));
+        d_iov_set(&akey, &akeyVal, sizeof(akeyVal));
+
+        rc = daos_obj_query_key(oh,
+                                DAOS_TX_NONE,
+                                DAOS_GET_DKEY | DAOS_GET_AKEY | DAOS_GET_RECX | DAOS_GET_MAX,
+                                &dkey,
+                                &akey,
+                                &recx,
+                                nullptr);
+
+        const int close_rc = daos_obj_close(oh, nullptr);
+        if (close_rc != 0) {
+            NIXL_ERROR << "queryMem: daos_obj_close failed: " << close_rc;
+        }
+        putCont(t.pool, t.cont);
+
+        if (rc == -DER_NONEXIST || (rc == 0 && recx.rx_nr == 0)) {
+            continue;
+        }
+        if (rc != 0) {
+            NIXL_ERROR << "queryMem: daos_obj_query_key failed: " << rc;
+            continue;
+        }
+
+        /* Offsets are flattened the way prepXfer() unflattens them:
+         * dkey = addr / dkeySpan_, akey = addr % dkeySpan_. The highest byte
+         * the object holds is therefore the end of the largest extent under
+         * the largest key pair. */
+        const uint64_t end = dkeyVal * dkeySpan_ + akeyVal + recx.rx_idx + recx.rx_nr;
+        resp[static_cast<size_t>(i)] = nixl_b_params_t{{"size", std::to_string(end)}};
+    }
+
+    return NIXL_SUCCESS;
+}
 
 /*
  * Group the paired descriptors by (object, dkey) and build the DAOS structures
@@ -543,18 +714,6 @@ nixlDaosEngine::prepXfer(const nixl_xfer_op_t &operation,
  * thread pool, the concurrency and the RPC shape are all unchanged. The only
  * difference is that the call now has a deadline the caller owns.
  */
-namespace {
-
-double
-nixlDaosEqTimeout() {
-    /* Whole seconds (NIXL's configuration has no floating-point values); 0
-     * disables the deadline and makes every call blocking. */
-    static const double t = static_cast<double>(configValue<long>("NIXL_DAOS_EQ_TIMEOUT", 60));
-    return t;
-}
-
-} // namespace
-
 /*
  * A borrow-and-return pool of event queues.
  *
@@ -658,7 +817,7 @@ nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
             d_iov_set(&dkey, &gp->dkeyVal, sizeof(uint64_t));
 
             const unsigned nr = static_cast<unsigned>(gp->iods.size());
-            const double eq_timeout = nixlDaosEqTimeout();
+            const double eq_timeout = eqTimeout_;
             daos_handle_t eq{};
             daos_event_t ev;
             daos_event_t *evp = nullptr;
@@ -755,7 +914,7 @@ nixlDaosEngine::postXfer(const nixl_xfer_op_t &operation,
             if (rc != 0) {
                 NIXL_ERROR << (req->op == NIXL_READ ? "daos_obj_fetch" : "daos_obj_update")
                            << " failed: " << rc;
-                req->recordError(NIXL_ERR_BACKEND);
+                req->recordError(daosToNixl(rc));
             } else if (req->op == NIXL_READ) {
                 /* A fetch of a key that was never written returns success with
                  * iod_size 0. Silence there would be a miss reported as a hit,
