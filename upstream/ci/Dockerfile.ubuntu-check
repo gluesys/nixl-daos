@@ -28,4 +28,4 @@ RUN meson setup build -Ddaos_path=/opt/daos -Denable_plugins=DAOS,POSIX -Dbuild_
 RUN ninja -C build && \
     so=$(find build -name 'libplugin_DAOS.so') && test -n "$so" && \
     ! LD_LIBRARY_PATH=/opt/daos/lib64 ldd "$so" | grep 'not found' && \
-    for t in reg xfer agent; do test -x "$(find build -name nixl_daos_test_$t -type f)"; done
+    for t in reg xfer agent query; do test -x "$(find build -name nixl_daos_test_$t -type f)"; done

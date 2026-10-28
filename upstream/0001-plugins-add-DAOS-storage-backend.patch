@@ -1,4 +1,4 @@
-From c772e71069722e4dc23d5093ab2d6de657d73835 Mon Sep 17 00:00:00 2001
+From 1325d9cb681c7a75cd618bc33bb6fd4eed373984 Mon Sep 17 00:00:00 2001
 From: Kyeongpyo Kim <hgichon@gmail.com>
 Date: Wed, 7 Oct 2026 22:53:41 +0900
 Subject: [PATCH] plugins: add DAOS storage backend
@@ -79,7 +79,7 @@ index 088c7f6..f26bec5 100644
  /benchmark @aranadive @ovidiusm @brminich @ai-dynamo/nixl-maintainers
  
 diff --git a/meson.build b/meson.build
-index ad264ca..c4b37f4 100644
+index 3a85df4..2184dfa 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -29,7 +29,7 @@ if enable_plugins_opt != '' and disable_plugins_opt != ''
@@ -104,7 +104,7 @@ index 791a532..3cccfc2 100644
  option('gds_path', type: 'string', value: '/usr/local/cuda/', description: 'Path to GDS CuFile install')
  option('cudapath_inc', type: 'string', value: '', description: 'Include path for CUDA')
 diff --git a/src/core/meson.build b/src/core/meson.build
-index e0dd563..e410d11 100644
+index 9d13714..76f989f 100644
 --- a/src/core/meson.build
 +++ b/src/core/meson.build
 @@ -37,6 +37,10 @@ if is_variable('infinia_backend_interface') and 'INFINIA' in static_plugins
@@ -119,10 +119,10 @@ index e0dd563..e410d11 100644
      nixl_lib_deps += [ obj_backend_interface ]
  endif
 diff --git a/src/core/nixl_plugin_manager.cpp b/src/core/nixl_plugin_manager.cpp
-index 72c3314..cbef2e3 100644
+index 2896912..a11195d 100644
 --- a/src/core/nixl_plugin_manager.cpp
 +++ b/src/core/nixl_plugin_manager.cpp
-@@ -864,6 +864,10 @@ void nixlPluginManager::registerBuiltinPlugins() {
+@@ -876,6 +876,10 @@ void nixlPluginManager::registerBuiltinPlugins() {
      NIXL_REGISTER_STATIC_PLUGIN(Backend, INFINIA)
  #endif
  
@@ -2593,10 +2593,10 @@ index 0000000..269d335
 +    return fails ? 1 : 0;
 +}
 diff --git a/test/unit/plugins/meson.build b/test/unit/plugins/meson.build
-index 7d6a9f0..6e5b6ec 100644
+index 5fe92ce..20b77f3 100644
 --- a/test/unit/plugins/meson.build
 +++ b/test/unit/plugins/meson.build
-@@ -73,6 +73,10 @@ if is_variable('infinia_backend_interface')
+@@ -81,6 +81,10 @@ if is_variable('infinia_backend_interface')
      subdir('infinia')
  endif
  
