@@ -62,14 +62,22 @@ the backend.
 
 ## Configuration
 
-Both can be given as backend parameters to `createBackend()`, which is the only
-way two DAOS backends in one agent can differ, or through the environment for a
-whole process. The parameter wins.
+`threads` and `eq_timeout` can be given as backend parameters to
+`createBackend()`, which is the only way two DAOS backends in one agent can
+differ, or through the environment for a whole process. The parameter wins.
+`pool` and `container` are backend parameters only.
 
 | parameter | environment | default | what it is |
 |---|---|---|---|
 | `threads` | `NIXL_DAOS_THREADS` | 64 | IO threads, 1..512 |
 | `eq_timeout` | `NIXL_DAOS_EQ_TIMEOUT` | 60 | seconds a request may wait in the event queue before it is abandoned; 0 makes every call blocking |
+| `pool` | — | none | default pool for descriptors with an empty `metaInfo`; needs `container` |
+| `container` | — | none | default container for descriptors with an empty `metaInfo`; needs `pool` |
+
+The default target exists for callers written for the file backends, which
+register `(0, size, fd, "")`: an empty `metaInfo` and the fd as `devId`. Such a
+caller derives `devId` from its own fds, so two processes that share one
+container also share object ids. Give each process its own container.
 
 ## Dependencies
 
@@ -110,7 +118,7 @@ The plugin library is `libplugin_DAOS.so` under the NIXL plugin directory.
 
 | field | meaning |
 |---|---|
-| `metaInfo` | `"pool/container"`, or `"pool/container/<hi>.<lo>"` for an explicit object id |
+| `metaInfo` | `"pool/container"`, or `"pool/container/<hi>.<lo>"` for an explicit object id, or empty to use the `pool` and `container` parameters |
 | `devId` | the caller's key for the object; the object id is derived from it when `metaInfo` has two fields |
 | `addr` | offset within the object |
 | `len` | bytes |

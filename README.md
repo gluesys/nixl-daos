@@ -24,6 +24,10 @@ Dynamo/KVBM and the LMCache NIXL backend.
   every thread reclaimed; a blocking call was still stuck at 120 s.
 - On NIXL main, against an upstream DAOS 2.8.0-6 server (1 rank, `ofi+tcp`), the
   `reg`, `xfer` and `agent` tests pass.
+- vLLM 0.30 + LMCache 0.5.5 storing the KV cache through LMCache's NIXL storage
+  backend into DAOS (4 ranks, kdev): every repeated prompt was a full hit read back
+  from DAOS, 1,837 of 1,837 retrievals; TTFT p50 0.166 s against 0.749 s
+  recomputed ([e2e/vllm/](e2e/vllm/README.md)).
 
 The design and the descriptor mapping are in
 [`src/plugins/daos/README.md`](src/plugins/daos/README.md). The full reports, with
@@ -43,6 +47,7 @@ method, raw numbers and the conclusions later retracted, are in
 | `upstream/` | the upstream submission: `integration.patch` and `apply-integration.sh` wire the plugin into a NIXL source tree; `0001-*.patch` is the commit as it will be submitted; issue and PR drafts; `ci/` holds an Ubuntu DAOS client image and build check for NIXL CI |
 | `ci/build.sh` | builds NIXL + the plugin inside a DAOS client image and produces the runtime image `nixl-daos:dev` (`images/Dockerfile.runtime`) |
 | `ci/e2e-testbed.sh` | runs the tests from that image against an existing DAOS pool on a client host |
+| `e2e/vllm/` | vLLM + LMCache image whose NIXL storage backend writes to DAOS through this plugin, with the LMCache patch it needs and the measured result |
 | `doc/measurements/` | measurement reports behind the numbers above |
 | `doc/adr/` | design decisions specific to this repository |
 

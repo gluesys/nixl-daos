@@ -8,6 +8,16 @@
 | `0001-plugins-add-DAOS-storage-backend.patch` | one commit on upstream main (DCO signed off): the whole change the PR will carry |
 | `integration.patch` | the meson wiring part of that commit (`meson.build`, `meson_options.txt`, `src/plugins/meson.build`, `test/unit/plugins/meson.build`) |
 | `apply-integration.sh` | puts this repository's plugin and tests into a NIXL tree and applies `integration.patch`; used by CI (`ci/build.sh`) |
+## Verified on hardware (2026-10-29, default target parameters)
+
+The `pool` and `container` backend parameters (target for an empty `metaInfo`)
+on the same lane B setup, image `nixl-daos:test-deftarget`: all four tests pass,
+including five new `test_reg` checks (empty `metaInfo` rejected without the
+parameters and with only `pool`, accepted with both, an explicit `metaInfo`
+still wins, and both name the same object). With them, vLLM + LMCache stores and
+reads its KV cache through LMCache's NIXL storage backend; see
+[`e2e/vllm/`](../e2e/vllm/README.md).
+
 ## Verified on hardware (2026-10-28, NIXL main `280c3a1`)
 
 Lane B: DAOS 2.8.0 server, 1 rank on `exaci5-2a` (QEMU NVMe through SPDK, 4
@@ -57,7 +67,8 @@ against objects an older build wrote.
 
 - Base: ai-dynamo/nixl main `280c3a1` (rebased 2026-10-28 from `44c1b56`, no
   conflicts; the plugin sources are unchanged). Local branch `feat/daos-backend`
-  (worktree `../nixl-wt-daos`, commit `1325d9c`). After the rebase
+  (worktree `../nixl-wt-daos`, commit `9edbf50`: `1325d9c` plus the `pool` and
+  `container` backend parameters, 2026-10-29). After the rebase
   `ci/Dockerfile.ubuntu-check` builds 313/313 targets on Ubuntu 24.04 with no
   warnings, and all four test binaries link. On the same base the four runtime
   tests pass against a DAOS 2.8.0 server (lane B, see below).

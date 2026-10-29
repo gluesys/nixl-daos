@@ -1,4 +1,4 @@
-From 1325d9cb681c7a75cd618bc33bb6fd4eed373984 Mon Sep 17 00:00:00 2001
+From 9edbf50d818db66c49401563014d75ffaa59b235 Mon Sep 17 00:00:00 2001
 From: Kyeongpyo Kim <hgichon@gmail.com>
 Date: Wed, 7 Oct 2026 22:53:41 +0900
 Subject: [PATCH] plugins: add DAOS storage backend
@@ -34,24 +34,24 @@ DAOS 2.9.100 development build, 2 ranks, 400G verbs: 34.17 GB/s reading
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Signed-off-by: Kyeongpyo Kim <hgichon@gmail.com>
 ---
- CODEOWNERS                            |   4 +
- meson.build                           |   2 +-
- meson_options.txt                     |   1 +
- src/core/meson.build                  |   4 +
- src/core/nixl_plugin_manager.cpp      |   4 +
- src/plugins/daos/README.md            | 226 ++++++
- src/plugins/daos/daos_backend.cpp     | 974 ++++++++++++++++++++++++++
- src/plugins/daos/daos_backend.h       | 370 ++++++++++
- src/plugins/daos/daos_plugin.cpp      |  50 ++
- src/plugins/daos/meson.build          |  83 +++
- src/plugins/meson.build               |   5 +
- test/unit/plugins/daos/meson.build    |  32 +
- test/unit/plugins/daos/test_agent.cpp | 187 +++++
- test/unit/plugins/daos/test_query.cpp | 170 +++++
- test/unit/plugins/daos/test_reg.cpp   | 108 +++
- test/unit/plugins/daos/test_xfer.cpp  | 183 +++++
- test/unit/plugins/meson.build         |   4 +
- 17 files changed, 2406 insertions(+), 1 deletion(-)
+ CODEOWNERS                            |    4 +
+ meson.build                           |    2 +-
+ meson_options.txt                     |    1 +
+ src/core/meson.build                  |    4 +
+ src/core/nixl_plugin_manager.cpp      |    4 +
+ src/plugins/daos/README.md            |  234 ++++++
+ src/plugins/daos/daos_backend.cpp     | 1001 +++++++++++++++++++++++++
+ src/plugins/daos/daos_backend.h       |  374 +++++++++
+ src/plugins/daos/daos_plugin.cpp      |   50 ++
+ src/plugins/daos/meson.build          |   83 ++
+ src/plugins/meson.build               |    5 +
+ test/unit/plugins/daos/meson.build    |   32 +
+ test/unit/plugins/daos/test_agent.cpp |  187 +++++
+ test/unit/plugins/daos/test_query.cpp |  170 +++++
+ test/unit/plugins/daos/test_reg.cpp   |  146 ++++
+ test/unit/plugins/daos/test_xfer.cpp  |  183 +++++
+ test/unit/plugins/meson.build         |    4 +
+ 17 files changed, 2483 insertions(+), 1 deletion(-)
  create mode 100644 src/plugins/daos/README.md
  create mode 100644 src/plugins/daos/daos_backend.cpp
  create mode 100644 src/plugins/daos/daos_backend.h
@@ -135,10 +135,10 @@ index 2896912..a11195d 100644
  }
 diff --git a/src/plugins/daos/README.md b/src/plugins/daos/README.md
 new file mode 100644
-index 0000000..2e1fc3e
+index 0000000..d3f623c
 --- /dev/null
 +++ b/src/plugins/daos/README.md
-@@ -0,0 +1,226 @@
+@@ -0,0 +1,234 @@
 +<!--
 +SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 +SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
@@ -203,14 +203,22 @@ index 0000000..2e1fc3e
 +
 +## Configuration
 +
-+Both can be given as backend parameters to `createBackend()`, which is the only
-+way two DAOS backends in one agent can differ, or through the environment for a
-+whole process. The parameter wins.
++`threads` and `eq_timeout` can be given as backend parameters to
++`createBackend()`, which is the only way two DAOS backends in one agent can
++differ, or through the environment for a whole process. The parameter wins.
++`pool` and `container` are backend parameters only.
 +
 +| parameter | environment | default | what it is |
 +|---|---|---|---|
 +| `threads` | `NIXL_DAOS_THREADS` | 64 | IO threads, 1..512 |
 +| `eq_timeout` | `NIXL_DAOS_EQ_TIMEOUT` | 60 | seconds a request may wait in the event queue before it is abandoned; 0 makes every call blocking |
++| `pool` | — | none | default pool for descriptors with an empty `metaInfo`; needs `container` |
++| `container` | — | none | default container for descriptors with an empty `metaInfo`; needs `pool` |
++
++The default target exists for callers written for the file backends, which
++register `(0, size, fd, "")`: an empty `metaInfo` and the fd as `devId`. Such a
++caller derives `devId` from its own fds, so two processes that share one
++container also share object ids. Give each process its own container.
 +
 +## Dependencies
 +
@@ -251,7 +259,7 @@ index 0000000..2e1fc3e
 +
 +| field | meaning |
 +|---|---|
-+| `metaInfo` | `"pool/container"`, or `"pool/container/<hi>.<lo>"` for an explicit object id |
++| `metaInfo` | `"pool/container"`, or `"pool/container/<hi>.<lo>"` for an explicit object id, or empty to use the `pool` and `container` parameters |
 +| `devId` | the caller's key for the object; the object id is derived from it when `metaInfo` has two fields |
 +| `addr` | offset within the object |
 +| `len` | bytes |
@@ -367,10 +375,10 @@ index 0000000..2e1fc3e
 +[vram]: https://github.com/gluesys/nixl-daos/blob/main/doc/measurements/NIXL-DAOS-VRAM.md
 diff --git a/src/plugins/daos/daos_backend.cpp b/src/plugins/daos/daos_backend.cpp
 new file mode 100644
-index 0000000..f776992
+index 0000000..01dde5d
 --- /dev/null
 +++ b/src/plugins/daos/daos_backend.cpp
-@@ -0,0 +1,974 @@
+@@ -0,0 +1,1001 @@
 +/*
 + * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 + * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
@@ -535,13 +543,15 @@ index 0000000..f776992
 +     * process; a value given here wins, because it is the only way to give two
 +     * DAOS backends in one agent different settings.
 +     *
-+     * "pool" and "container" will join these so a deployment can set a default
-+     * instead of repeating it in every metaInfo. */
++     * "pool" and "container" have no environment form: they name where the
++     * data goes, and that is a property of the backend, not of the process. */
 +    return nixl_b_params_t{
 +        {"threads", "IO threads, 1..512 (default 64, env NIXL_DAOS_THREADS)"},
 +        {"eq_timeout",
 +         "seconds a request may wait in the event queue before it is abandoned; "
 +         "0 makes every call blocking (default 60, env NIXL_DAOS_EQ_TIMEOUT)"},
++        {"pool", "default pool for descriptors with an empty metaInfo (needs container)"},
++        {"container", "default container for descriptors with an empty metaInfo (needs pool)"},
 +    };
 +}
 +
@@ -635,6 +645,29 @@ index 0000000..f776992
 +        NIXL_WARN << "eq_timeout=" << eqt << " ignored (expected >= 0)";
 +    }
 +    NIXL_DEBUG << "DAOS backend: " << nthreads << " IO threads, eq_timeout " << eqTimeout_ << "s";
++
++    /* A default target for callers that cannot put one in metaInfo. Storage
++     * clients written for the file backends register (0, size, fd, "") -- an
++     * empty metaInfo and the fd as devId -- so without a default they cannot
++     * use this backend at all. Both halves or neither: half a target would
++     * only turn into a confusing error at registration time. */
++    std::string defPool, defCont;
++    if (getInitParam("pool", defPool) != NIXL_SUCCESS) {
++        defPool.clear();
++    }
++    if (getInitParam("container", defCont) != NIXL_SUCCESS) {
++        defCont.clear();
++    }
++    if (!defPool.empty() || !defCont.empty()) {
++        daosTarget t;
++        if (parseTarget(defPool + "/" + defCont, t) && !t.haveOid) {
++            defaultTarget_ = defPool + "/" + defCont;
++            NIXL_DEBUG << "DAOS backend: default target " << defaultTarget_;
++        } else {
++            NIXL_WARN << "pool=\"" << defPool << "\" container=\"" << defCont
++                      << "\" ignored (both are needed, without '/')";
++        }
++    }
 +}
 +
 +nixlDaosEngine::~nixlDaosEngine() {
@@ -742,10 +775,11 @@ index 0000000..f776992
 +    }
 +
 +    daosTarget t;
-+    if (!parseTarget(mem.metaInfo, t)) {
++    if (!parseTarget(mem.metaInfo.empty() ? defaultTarget_ : mem.metaInfo, t)) {
 +        NIXL_ERROR << "DAOS metaInfo must be \"pool/container\" or "
-+                      "\"pool/container/<hi>.<lo>\", got: "
-+                   << mem.metaInfo;
++                      "\"pool/container/<hi>.<lo>\", or empty with the pool and "
++                      "container backend parameters set; got: \""
++                   << mem.metaInfo << "\"";
 +        return NIXL_ERR_INVALID_PARAM;
 +    }
 +
@@ -832,10 +866,11 @@ index 0000000..f776992
 +        const nixlBlobDesc &d = descs[i];
 +
 +        daosTarget t;
-+        if (!parseTarget(d.metaInfo, t)) {
++        if (!parseTarget(d.metaInfo.empty() ? defaultTarget_ : d.metaInfo, t)) {
 +            NIXL_WARN << "queryMem: DAOS metaInfo must be \"pool/container\" or "
-+                         "\"pool/container/<hi>.<lo>\", got: "
-+                      << d.metaInfo;
++                         "\"pool/container/<hi>.<lo>\", or empty with the pool and "
++                         "container backend parameters set; got: \""
++                      << d.metaInfo << "\"";
 +            continue;
 +        }
 +
@@ -1347,10 +1382,10 @@ index 0000000..f776992
 +}
 diff --git a/src/plugins/daos/daos_backend.h b/src/plugins/daos/daos_backend.h
 new file mode 100644
-index 0000000..fed54aa
+index 0000000..ca9254b
 --- /dev/null
 +++ b/src/plugins/daos/daos_backend.h
-@@ -0,0 +1,370 @@
+@@ -0,0 +1,374 @@
 +/*
 + * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 + * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
@@ -1718,6 +1753,10 @@ index 0000000..fed54aa
 +     * function-local static, so the first backend created in a process fixed
 +     * the value for every later one. */
 +    double eqTimeout_ = 60.0;
++
++    /* "pool/container" from the pool and container backend parameters, used
++     * for descriptors whose metaInfo is empty. Empty when they were not given. */
++    std::string defaultTarget_;
 +};
 +
 +#endif // NIXL_SRC_PLUGINS_DAOS_DAOS_BACKEND_H
@@ -2291,10 +2330,10 @@ index 0000000..e4f1ed6
 +}
 diff --git a/test/unit/plugins/daos/test_reg.cpp b/test/unit/plugins/daos/test_reg.cpp
 new file mode 100644
-index 0000000..fd9eb58
+index 0000000..e6abaf7
 --- /dev/null
 +++ b/test/unit/plugins/daos/test_reg.cpp
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,146 @@
 +/*
 + * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 + * SPDX-FileCopyrightText: Copyright (c) 2026 Gluesys Co., Ltd.
@@ -2396,6 +2435,44 @@ index 0000000..fd9eb58
 +        printf("  oid(1001) again = %lu.%lu\n", c->oid.hi, c->oid.lo);
 +    }
 +    ck("deregister again", eng.deregisterMem(md3), NIXL_SUCCESS);
++
++    /* Callers written for the file backends register with an empty metaInfo.
++     * Without the pool and container parameters that is an error; with them it
++     * names the same object an explicit "pool/container" would. */
++    nixlBlobDesc e1(0, 0, 1001);
++    nixlBackendMD *mde = nullptr;
++    ck("empty metaInfo rejected without defaults",
++       eng.registerMem(e1, FILE_SEG, mde),
++       NIXL_ERR_INVALID_PARAM);
++
++    nixl_b_params_t half{{"pool", pool}};
++    nixlBackendInitParams ph = p;
++    ph.customParams = &half;
++    nixlDaosEngine engHalf(&ph);
++    ck("empty metaInfo rejected with pool only",
++       engHalf.registerMem(e1, FILE_SEG, mde),
++       NIXL_ERR_INVALID_PARAM);
++
++    nixl_b_params_t defs{{"pool", pool}, {"container", cont}};
++    nixlBackendInitParams pd = p;
++    pd.customParams = &defs;
++    nixlDaosEngine engDef(&pd);
++    nixlBackendMD *mdx = nullptr;
++    ck("empty metaInfo uses pool/container params",
++       engDef.registerMem(e1, FILE_SEG, mde),
++       NIXL_SUCCESS);
++    ck("explicit metaInfo still wins", engDef.registerMem(o3, FILE_SEG, mdx), NIXL_SUCCESS);
++    if (mde && mdx) {
++        auto *a = dynamic_cast<nixlDaosObjMD *>(mde);
++        auto *b = dynamic_cast<nixlDaosObjMD *>(mdx);
++        bool same = a->oid.hi == b->oid.hi && a->oid.lo == b->oid.lo;
++        printf("  %-46s %s\n", "default target -> same oid as explicit", same ? "PASS" : "FAIL");
++        if (!same) {
++            fails++;
++        }
++    }
++    ck("deregister default-target object", engDef.deregisterMem(mde), NIXL_SUCCESS);
++    ck("deregister explicit object", engDef.deregisterMem(mdx), NIXL_SUCCESS);
 +
 +    printf("\n  === %s (%d failure%s) ===\n",
 +           fails ? "FAILED" : "ALL PASS",
