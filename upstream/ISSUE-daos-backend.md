@@ -41,8 +41,8 @@ Out-of-tree plugin: https://github.com/gluesys/nixl-daos ([`src/plugins/daos/REA
 ### **How?**
 
 - `src/plugins/daos/`: `nixlDaosEngine` implementing `nixlBackendEngine`; local transfers only (`supportsLocal()`)
-- Descriptor mapping: `metaInfo` = `"pool/container"` (or with an explicit object id), `devId` = object key, `addr` = offset. Offsets map to `dkey = addr / 64 MiB`, `akey = addr % 64 MiB`, so descriptors within one span fold into a single RPC and separate spans spread across targets
-- Fixed worker pool and an event-queue deadline, both backend parameters (`threads`, `eq_timeout`, advertised by `getPluginParams()`) with an environment form for a whole process; defaults 64 threads and 60 s
+- Descriptor mapping: `metaInfo` = `"pool/container"` (or with an explicit object id), `devId` = object key, `addr` = offset. An empty `metaInfo` uses the `pool` and `container` backend parameters, which is what clients written for the file backends need: LMCache's NIXL storage backend registers `(0, size, fd, "")`, and with that default and a small LMCache change (accepting the backend name) it stores and reads vLLM's KV cache through this backend. Offsets map to `dkey = addr / 64 MiB`, `akey = addr % 64 MiB`, so descriptors within one span fold into a single RPC and separate spans spread across targets
+- Fixed worker pool and an event-queue deadline, both backend parameters (`threads`, `eq_timeout`, advertised by `getPluginParams()` with `pool` and `container`) with an environment form for a whole process; defaults 64 threads and 60 s
 - `queryMem()` answers whether an object is present and how far it extends, so a cache can skip a read. Objects use `DAOS_OT_MULTI_UINT64` because the dkey/akey are uint64 and an ordered query needs that
 - Tests are built but not registered with `meson test`, since they need a live pool -- as in `infinia`, `hf3fs`, `mooncake` and `object`
 - Build: `-Ddaos_path` points at the DAOS client; skipped with a warning when the client is absent, an error when requested explicitly, and `-Ddisable_plugins=DAOS` leaves it out

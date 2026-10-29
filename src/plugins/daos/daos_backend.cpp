@@ -162,13 +162,15 @@ nixlDaosEngine::getPluginParams() {
      * process; a value given here wins, because it is the only way to give two
      * DAOS backends in one agent different settings.
      *
-     * "pool" and "container" will join these so a deployment can set a default
-     * instead of repeating it in every metaInfo. */
+     * "pool" and "container" have no environment form: they name where the
+     * data goes, and that is a property of the backend, not of the process. */
     return nixl_b_params_t{
         {"threads", "IO threads, 1..512 (default 64, env NIXL_DAOS_THREADS)"},
         {"eq_timeout",
          "seconds a request may wait in the event queue before it is abandoned; "
          "0 makes every call blocking (default 60, env NIXL_DAOS_EQ_TIMEOUT)"},
+        {"pool", "default pool for descriptors with an empty metaInfo (needs container)"},
+        {"container", "default container for descriptors with an empty metaInfo (needs pool)"},
     };
 }
 
@@ -262,6 +264,29 @@ nixlDaosEngine::nixlDaosEngine(const nixlBackendInitParams *init_params)
         NIXL_WARN << "eq_timeout=" << eqt << " ignored (expected >= 0)";
     }
     NIXL_DEBUG << "DAOS backend: " << nthreads << " IO threads, eq_timeout " << eqTimeout_ << "s";
+
+    /* A default target for callers that cannot put one in metaInfo. Storage
+     * clients written for the file backends register (0, size, fd, "") -- an
+     * empty metaInfo and the fd as devId -- so without a default they cannot
+     * use this backend at all. Both halves or neither: half a target would
+     * only turn into a confusing error at registration time. */
+    std::string defPool, defCont;
+    if (getInitParam("pool", defPool) != NIXL_SUCCESS) {
+        defPool.clear();
+    }
+    if (getInitParam("container", defCont) != NIXL_SUCCESS) {
+        defCont.clear();
+    }
+    if (!defPool.empty() || !defCont.empty()) {
+        daosTarget t;
+        if (parseTarget(defPool + "/" + defCont, t) && !t.haveOid) {
+            defaultTarget_ = defPool + "/" + defCont;
+            NIXL_DEBUG << "DAOS backend: default target " << defaultTarget_;
+        } else {
+            NIXL_WARN << "pool=\"" << defPool << "\" container=\"" << defCont
+                      << "\" ignored (both are needed, without '/')";
+        }
+    }
 }
 
 nixlDaosEngine::~nixlDaosEngine() {
@@ -369,10 +394,11 @@ nixlDaosEngine::registerMem(const nixlBlobDesc &mem,
     }
 
     daosTarget t;
-    if (!parseTarget(mem.metaInfo, t)) {
+    if (!parseTarget(mem.metaInfo.empty() ? defaultTarget_ : mem.metaInfo, t)) {
         NIXL_ERROR << "DAOS metaInfo must be \"pool/container\" or "
-                      "\"pool/container/<hi>.<lo>\", got: "
-                   << mem.metaInfo;
+                      "\"pool/container/<hi>.<lo>\", or empty with the pool and "
+                      "container backend parameters set; got: \""
+                   << mem.metaInfo << "\"";
         return NIXL_ERR_INVALID_PARAM;
     }
 
@@ -459,10 +485,11 @@ nixlDaosEngine::queryMem(const nixl_reg_dlist_t &descs,
         const nixlBlobDesc &d = descs[i];
 
         daosTarget t;
-        if (!parseTarget(d.metaInfo, t)) {
+        if (!parseTarget(d.metaInfo.empty() ? defaultTarget_ : d.metaInfo, t)) {
             NIXL_WARN << "queryMem: DAOS metaInfo must be \"pool/container\" or "
-                         "\"pool/container/<hi>.<lo>\", got: "
-                      << d.metaInfo;
+                         "\"pool/container/<hi>.<lo>\", or empty with the pool and "
+                         "container backend parameters set; got: \""
+                      << d.metaInfo << "\"";
             continue;
         }
 

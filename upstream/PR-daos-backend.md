@@ -32,7 +32,10 @@ backend use it directly. Design discussed in the RFC issue (fill in the number w
   fixed per object against 0.0137 ms for the object API.
 - **Mapping.** `metaInfo` = `"pool/container"` (optionally with an object id),
   `devId` = object key (object id derived from it, stable across restarts),
-  `addr` = offset; `dkey = addr / 64 MiB`, `akey = addr % 64 MiB`.
+  `addr` = offset; `dkey = addr / 64 MiB`, `akey = addr % 64 MiB`. An empty
+  `metaInfo` uses the `pool` and `container` backend parameters, so a client
+  written for the file backends (LMCache registers `(0, size, fd, "")`) works
+  unchanged.
 - **Concurrency.** A fixed worker pool (`NIXL_DAOS_THREADS`, default 64). Each
   request borrows a DAOS event queue for its duration and polls it with a deadline
   (`NIXL_DAOS_EQ_TIMEOUT`, default 60 s), so a dead engine cannot hang a request.

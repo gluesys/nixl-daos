@@ -365,6 +365,10 @@ private:
      * function-local static, so the first backend created in a process fixed
      * the value for every later one. */
     double eqTimeout_ = 60.0;
+
+    /* "pool/container" from the pool and container backend parameters, used
+     * for descriptors whose metaInfo is empty. Empty when they were not given. */
+    std::string defaultTarget_;
 };
 
 #endif // NIXL_SRC_PLUGINS_DAOS_DAOS_BACKEND_H

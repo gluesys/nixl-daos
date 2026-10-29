@@ -1,0 +1,75 @@
+SPDX-License-Identifier: Apache-2.0
+Copyright 2026 Gluesys Co., Ltd.
+
+LMCache 0.5.5: accept "DAOS" as a NIXL storage backend and treat it as a file
+backend (one registration per slot fd, empty metaInfo). The NIXL DAOS plugin maps
+the empty metaInfo to its pool and container backend parameters.
+
+diff -ru a/lmcache/v1/distributed/l2_adapters/nixl_store_agents/file_dynamic_nixl_store_agent.py b/lmcache/v1/distributed/l2_adapters/nixl_store_agents/file_dynamic_nixl_store_agent.py
+--- a/lmcache/v1/distributed/l2_adapters/nixl_store_agents/file_dynamic_nixl_store_agent.py	2026-10-28 22:47:43.949734451 +0900
++++ b/lmcache/v1/distributed/l2_adapters/nixl_store_agents/file_dynamic_nixl_store_agent.py	2026-10-28 22:47:43.965733987 +0900
+@@ -21,7 +21,7 @@
+ 
+ logger = init_logger(__name__)
+ 
+-FILE_DYNAMIC_BACKENDS = ("GDS", "GDS_MT", "POSIX", "HF3FS")
++FILE_DYNAMIC_BACKENDS = ("GDS", "GDS_MT", "POSIX", "HF3FS", "DAOS")
+ 
+ 
+ class FileDynamicNixlStorageAgent(DynamicNixlStorageAgent):
+diff -ru a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py
+--- a/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py	2026-10-28 22:47:43.947734509 +0900
++++ b/lmcache/v1/distributed/l2_adapters/nixl_store_l2_adapter.py	2026-10-28 22:47:43.963734045 +0900
+@@ -185,7 +185,7 @@
+             device_id=0,  # 0 indicates cpu
+         )
+ 
+-        if self.backend in ["GDS", "GDS_MT", "POSIX", "HF3FS"]:
++        if self.backend in ["GDS", "GDS_MT", "POSIX", "HF3FS", "DAOS"]:
+             file_size = int(
+                 self.backend_params.get("file_size", l1_memory_desc.align_bytes)
+             )
+@@ -916,11 +916,12 @@
+     "GDS",
+     "GDS_MT",
+     "POSIX",
++    "DAOS",
+     "HF3FS",
+     "OBJ",
+     "AZURE_BLOB",
+ )
+-_FILE_BACKENDS = ("GDS", "GDS_MT", "POSIX", "HF3FS")
++_FILE_BACKENDS = ("GDS", "GDS_MT", "POSIX", "HF3FS", "DAOS")
+ 
+ 
+ class NixlStoreL2AdapterConfig(L2AdapterConfigBase):
+diff -ru a/lmcache/v1/storage_backend/nixl_storage_backend.py b/lmcache/v1/storage_backend/nixl_storage_backend.py
+--- a/lmcache/v1/storage_backend/nixl_storage_backend.py	2026-10-28 22:47:43.945734567 +0900
++++ b/lmcache/v1/storage_backend/nixl_storage_backend.py	2026-10-28 22:47:43.959734161 +0900
+@@ -155,7 +155,7 @@
+         device = device.split(":", 1)[0]
+         if backend in ("GDS", "GDS_MT", "OBJ"):
+             return device == "cpu" or device == "cuda"
+-        elif backend in ("POSIX", "HF3FS", "AZURE_BLOB", "DOCA_MEMOS"):
++        elif backend in ("POSIX", "HF3FS", "AZURE_BLOB", "DOCA_MEMOS", "DAOS"):
+             return device == "cpu"
+         else:
+             return False
+@@ -271,7 +271,7 @@
+             backend, config.nixl_buffer_device
+         ), "Invalid NIXL backend & device combination"
+ 
+-        if backend in ("GDS", "GDS_MT", "POSIX", "HF3FS"):
++        if backend in ("GDS", "GDS_MT", "POSIX", "HF3FS", "DAOS"):
+             assert path is not None, f"nixl_path must be provided for {backend} backend"
+ 
+         return NixlStorageConfig(
+@@ -1127,7 +1127,7 @@
+             prevent unintended sharding.
+         """
+ 
+-        if backend in ("GDS", "GDS_MT", "POSIX", "HF3FS"):
++        if backend in ("GDS", "GDS_MT", "POSIX", "HF3FS", "DAOS"):
+             if isinstance(path, list) and any("," in p for p in path):
+                 logger.warning(
+                     "nixl_path entries contain commas; joining for PathSharder may "

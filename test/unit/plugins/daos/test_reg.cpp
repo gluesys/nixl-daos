@@ -100,6 +100,44 @@ main(int argc, char **argv) {
     }
     ck("deregister again", eng.deregisterMem(md3), NIXL_SUCCESS);
 
+    /* Callers written for the file backends register with an empty metaInfo.
+     * Without the pool and container parameters that is an error; with them it
+     * names the same object an explicit "pool/container" would. */
+    nixlBlobDesc e1(0, 0, 1001);
+    nixlBackendMD *mde = nullptr;
+    ck("empty metaInfo rejected without defaults",
+       eng.registerMem(e1, FILE_SEG, mde),
+       NIXL_ERR_INVALID_PARAM);
+
+    nixl_b_params_t half{{"pool", pool}};
+    nixlBackendInitParams ph = p;
+    ph.customParams = &half;
+    nixlDaosEngine engHalf(&ph);
+    ck("empty metaInfo rejected with pool only",
+       engHalf.registerMem(e1, FILE_SEG, mde),
+       NIXL_ERR_INVALID_PARAM);
+
+    nixl_b_params_t defs{{"pool", pool}, {"container", cont}};
+    nixlBackendInitParams pd = p;
+    pd.customParams = &defs;
+    nixlDaosEngine engDef(&pd);
+    nixlBackendMD *mdx = nullptr;
+    ck("empty metaInfo uses pool/container params",
+       engDef.registerMem(e1, FILE_SEG, mde),
+       NIXL_SUCCESS);
+    ck("explicit metaInfo still wins", engDef.registerMem(o3, FILE_SEG, mdx), NIXL_SUCCESS);
+    if (mde && mdx) {
+        auto *a = dynamic_cast<nixlDaosObjMD *>(mde);
+        auto *b = dynamic_cast<nixlDaosObjMD *>(mdx);
+        bool same = a->oid.hi == b->oid.hi && a->oid.lo == b->oid.lo;
+        printf("  %-46s %s\n", "default target -> same oid as explicit", same ? "PASS" : "FAIL");
+        if (!same) {
+            fails++;
+        }
+    }
+    ck("deregister default-target object", engDef.deregisterMem(mde), NIXL_SUCCESS);
+    ck("deregister explicit object", engDef.deregisterMem(mdx), NIXL_SUCCESS);
+
     printf("\n  === %s (%d failure%s) ===\n",
            fails ? "FAILED" : "ALL PASS",
            fails,
